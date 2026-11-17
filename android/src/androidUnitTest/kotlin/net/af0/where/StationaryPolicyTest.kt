@@ -118,10 +118,10 @@ class StationaryPolicyTest {
         policy.startTracking(0L)
         policy.onFix(fix(0L), 0L)
         stationaryAt(idle)
-        assertTrue(policy.stopTracking(forgetPlace = false), "an outage: was stationary, disarm")
-        assertEquals(Mode.OFF, policy.mode)
+        policy.stopTracking(forgetPlace = false)
+        assertEquals(Mode.OFF, policy.mode, "an outage")
         assertEquals(37.0, policy.anchor?.lat)
-        assertFalse(policy.stopTracking(forgetPlace = true), "already off")
+        policy.stopTracking(forgetPlace = true)
         assertNull(policy.anchor)
 
         // Tracking again: a fresh countdown.
@@ -148,8 +148,23 @@ class StationaryPolicyTest {
         assertEquals(policy.fixTimeoutMs, policy.heartbeatFixTimeoutMs(idle + 5 * 60_000L))
         val due = idle + policy.longFixEveryMs
         assertEquals(policy.longFixTimeoutMs, policy.heartbeatFixTimeoutMs(due))
+        policy.heartbeatFixDone(policy.longFixTimeoutMs, gotFix = false, tookMs = policy.longFixTimeoutMs, now = due)
         assertEquals(policy.fixTimeoutMs, policy.heartbeatFixTimeoutMs(due + 5 * 60_000L))
         assertEquals(policy.longFixTimeoutMs, policy.heartbeatFixTimeoutMs(due + policy.longFixEveryMs))
+    }
+
+    @Test
+    fun aLongFixThatFailsAtOnceIsRetriedNextHeartbeat() {
+        policy.startTracking(0L)
+        stationaryAt(idle)
+        val due = idle + policy.longFixEveryMs
+        // No GPS for the moment: it returned straight away, having spent nothing.
+        policy.heartbeatFixDone(policy.heartbeatFixTimeoutMs(due), gotFix = false, tookMs = 5L, now = due)
+        val next = due + 5 * 60_000L
+        assertEquals(policy.longFixTimeoutMs, policy.heartbeatFixTimeoutMs(next))
+        // A quick success does use the slot.
+        policy.heartbeatFixDone(policy.longFixTimeoutMs, gotFix = true, tookMs = 2_000L, now = next)
+        assertEquals(policy.fixTimeoutMs, policy.heartbeatFixTimeoutMs(next + 5 * 60_000L))
     }
 
     @Test

@@ -87,17 +87,14 @@ class StationaryPolicy(
     /**
      * Tracking stops: sharing off or nobody to share with ([forgetPlace]), or an outage
      * (permission or location services) after which the device may have moved unobserved.
-     * Returns true if it was stationary, so the trigger must be disarmed.
      */
-    fun stopTracking(forgetPlace: Boolean): Boolean {
-        val wasStationary = mode == Mode.STATIONARY
+    fun stopTracking(forgetPlace: Boolean) {
         mode = Mode.OFF
         unconfirmedMove = null
         if (forgetPlace) {
             anchor = null
             latestFix = null
         }
-        return wasStationary
     }
 
     /** The app left the foreground: time spent visible doesn't count toward going stationary. */
@@ -166,10 +163,21 @@ class StationaryPolicy(
     }
 
     /** The timeout for the heartbeat's forced fix at [now]; see [longFixEveryMs]. */
-    fun heartbeatFixTimeoutMs(now: Long): Long {
-        if (mode != Mode.STATIONARY || now - lastLongFixAt < longFixEveryMs) return fixTimeoutMs
-        lastLongFixAt = now
-        return longFixTimeoutMs
+    fun heartbeatFixTimeoutMs(now: Long): Long =
+        if (mode == Mode.STATIONARY && now - lastLongFixAt >= longFixEveryMs) longFixTimeoutMs else fixTimeoutMs
+
+    /**
+     * The heartbeat's fix with [timeoutMs] ended at [now] after [tookMs], with a fix or not. A long
+     * one uses up its slot only if it got a fix or actually ran: one that failed at once (no GPS
+     * for the moment) spent nothing, so the next heartbeat tries again.
+     */
+    fun heartbeatFixDone(
+        timeoutMs: Long,
+        gotFix: Boolean,
+        tookMs: Long,
+        now: Long,
+    ) {
+        if (timeoutMs == longFixTimeoutMs && (gotFix || tookMs >= fixTimeoutMs)) lastLongFixAt = now
     }
 
     private fun isCredible(

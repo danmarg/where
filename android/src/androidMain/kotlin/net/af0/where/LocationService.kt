@@ -132,19 +132,31 @@ class LocationService : Service() {
     @VisibleForTesting
     internal var geofenceCenter: Pair<Double, Double>? = null
 
+    /** The awake priority, BALANCED or HIGH; stationary's PASSIVE is derived, see [effectivePriority]. */
     @VisibleForTesting
     internal var currentPriority = LocationAccuracy.BALANCED
 
     @VisibleForTesting
     internal var currentInterval = BALANCED_INTERVAL_MS
 
+    /** What the active registration should be: PASSIVE while stationary, else [currentPriority]. */
+    private val effectivePriority: LocationAccuracy
+        get() = if (stationary.mode == StationaryPolicy.Mode.STATIONARY) LocationAccuracy.PASSIVE else currentPriority
+
+    // What the current active registration was made with; ensureLocationRegistration re-registers
+    // when they differ from what's wanted.
+    private var registeredPriority: LocationAccuracy? = null
+    private var registeredInterval = 0L
+
     /** [elapsedClock] time of the last geofence exit; see [endHighAccuracyIfIdle]. */
     @VisibleForTesting
     internal var lastGeofenceExitAt = 0L
 
     /**
-     * F-Droid's stationary mode (#483): the policy decides, this service carries it out. While
-     * [StationaryPolicy.Mode.STATIONARY], currentPriority is PASSIVE and the motion trigger is armed.
+     * F-Droid's stationary mode (#483): the policy decides, this service carries it out. Its mode
+     * is the only record: [ensureLocationRegistration] makes the registration (PASSIVE while
+     * [StationaryPolicy.Mode.STATIONARY]) and the motion trigger (disarmed otherwise) follow it,
+     * so every transition just changes the policy and calls that.
      */
     @VisibleForTesting
     internal val stationary = StationaryPolicy()
@@ -584,7 +596,19 @@ class LocationService : Service() {
         }
     }
 
+    /**
+     * Makes the registrations, and the motion trigger, match what's wanted now: sharing, the
+     * friends, permission, [currentPriority] and [stationary]'s mode. Call it after changing any of
+     * them; it's idempotent.
+     */
     private fun ensureLocationRegistration() {
+        updateRegistrations()
+        // Disarmed whenever not stationary, however the mode left it (a leave, an outage, nobody to
+        // share with). Arming isn't done here: it can fail, so enterStationaryIfIdle arms first.
+        if (stationary.mode != StationaryPolicy.Mode.STATIONARY) locationProvider.cancelMotionTrigger()
+    }
+
+    private fun updateRegistrations() {
         val hasPermission = hasLocationPermission()
         val servicesEnabled = hasLocationServicesEnabled()
         val isSharing = userStore.isSharingLocation.value
@@ -607,7 +631,7 @@ class LocationService : Service() {
             // Whatever the cause, tracking stops: the device may move unobserved, so stationary
             // mode ends and the countdown restarts when tracking comes back. Sharing off forgets
             // the place too; an outage keeps it (a HIGH request is kept for a blip mid-drive).
-            if (stationary.stopTracking(forgetPlace = !isSharing)) resetToBalancedAccuracy()
+            stationary.stopTracking(forgetPlace = !isSharing)
             if (isPassiveRegistered) {
                 locationProvider.removePassiveUpdates()
                 isPassiveRegistered = false
@@ -643,7 +667,8 @@ class LocationService : Service() {
             return
         }
 
-        if (isRegistered) return
+        val priority = effectivePriority
+        if (isRegistered && registeredPriority == priority && registeredInterval == currentInterval) return
 
         if (!isPassiveRegistered) {
             isPassiveRegistered = locationProvider.requestPassiveUpdates()
@@ -653,7 +678,9 @@ class LocationService : Service() {
         // Keep max delivery delay tight (10s) so the provider doesn't batch up to a full minute of
         // fixes before delivering — that batching can mask "moving" updates by up to 60s in
         // marginal conditions.
-        isRegistered = locationProvider.requestActiveUpdates(currentPriority, currentInterval, 10_000L)
+        isRegistered = locationProvider.requestActiveUpdates(priority, currentInterval, 10_000L)
+        registeredPriority = priority
+        registeredInterval = currentInterval
         // A new registration is the retry point for a FAILED plant.
         if (isRegistered) geofenceRetryBlocked = false
         if (isRegistered && canAttemptGeofencePlant()) {
@@ -670,7 +697,7 @@ class LocationService : Service() {
         if (isRegistered) {
             lastRegistrationTime = clock()
             lastLocationCallbackTime = 0L // reset so watchdog waits for the first callback from this registration
-            Log.i(TAG, "Location updates registered successfully with priority=$currentPriority.")
+            Log.i(TAG, "Location updates registered successfully with priority=$priority.")
         } else {
             Log.w(TAG, "requestActiveUpdates failed (likely missing permission); isRegistered=false")
         }
@@ -815,7 +842,9 @@ class LocationService : Service() {
                         WAKE_LOCK_TIMEOUT_MS,
                     )
                 }
+                val fixStartedAt = elapsedClock()
                 val loc = forceLocationUpdateAndGet(fixTimeoutMs)
+                stationary.heartbeatFixDone(fixTimeoutMs, loc != null, elapsedClock() - fixStartedAt, elapsedClock())
 
                 val lastLoc =
                     if (loc != null) {
@@ -888,7 +917,6 @@ class LocationService : Service() {
         Log.i(TAG, "No geofence exit for ${HIGH_ACCURACY_IDLE_MS / 60_000}min; back to balanced accuracy")
         e2eeManager.addDiagnosticEvent("Stopped moving; balanced accuracy")
         resetToBalancedAccuracy()
-        isRegistered = false
         ensureLocationRegistration()
     }
 
@@ -934,11 +962,9 @@ class LocationService : Service() {
         return distance[0] < GeofencePolicy.radiusMeters(isMoving = true) / 2
     }
 
-    /** Every path back to BALANCED, stationary's included, disarms the motion trigger here. */
     private fun resetToBalancedAccuracy() {
         currentPriority = LocationAccuracy.BALANCED
         currentInterval = BALANCED_INTERVAL_MS
-        locationProvider.cancelMotionTrigger()
     }
 
     /**
@@ -967,8 +993,6 @@ class LocationService : Service() {
         stationary.entered(now)
         Log.i(TAG, "No movement for ${stationary.idleMs / 60_000}min; stationary until motion")
         diagnostic(STATIONARY_ENTERED)
-        currentPriority = LocationAccuracy.PASSIVE
-        isRegistered = false
         ensureLocationRegistration()
     }
 
@@ -1008,11 +1032,9 @@ class LocationService : Service() {
         resumeFromStationary(reason)
     }
 
-    /** Carries out leaving stationary: BALANCED again, the trigger disarmed. [reason] is for the log. */
+    /** Carries out leaving stationary: the awake request again, the trigger disarmed. [reason] is for the log. */
     private fun resumeFromStationary(reason: String) {
         Log.i(TAG, "Leaving stationary ($reason); balanced accuracy")
-        resetToBalancedAccuracy()
-        isRegistered = false
         ensureLocationRegistration()
     }
 
