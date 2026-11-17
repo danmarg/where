@@ -10,7 +10,6 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import kotlin.math.abs
-import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -35,8 +34,12 @@ class PeerMarkerBitmapTest {
         val tipXs = (0 until bmp.width).filter { x -> Color.alpha(bmp.getPixel(x, tip)) > 0 }
         assertTrue(abs(tipXs.average() - bmp.width / 2.0) <= 2, "tip at x=${tipXs.average()} of ${bmp.width}")
         // The pin's red, not the end of the label box.
-        val px = bmp.getPixel(bmp.width / 2, tip - 2)
-        assertEquals(Triple(176, 0, 32), Triple(Color.red(px), Color.green(px), Color.blue(px)), "pin color at the tip")
+        // A few rows up, inside the triangle; a tolerance for antialiasing and premultiply rounding.
+        val px = bmp.getPixel(bmp.width / 2, tip - 4)
+        assertTrue(
+            abs(Color.red(px) - 176) <= 3 && Color.green(px) <= 3 && abs(Color.blue(px) - 32) <= 3,
+            "pin color near the tip: ${Integer.toHexString(px)}",
+        )
     }
 
     @Test
