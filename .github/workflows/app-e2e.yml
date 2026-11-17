@@ -147,8 +147,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 110
     env:
-      # The emulator-runner's defaults, spelled out: the test relaunches the emulator with them
-      # if it exits on a reboot.
+      # Set here so the test can relaunch the emulator with the same flags if it exits on a reboot.
+      # `-no-snapshot` keeps the initial launch and the relaunch configured the same way.
       EMULATOR_OPTIONS: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
     steps:
       - uses: actions/checkout@v4
