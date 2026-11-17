@@ -190,12 +190,13 @@ fun MapComposable(
     val currentOnSelectedUserIdChange by rememberUpdatedState(onSelectedUserIdChange)
 
     // Each peer icon image in the style, by image id, with what it was drawn from: an image is
-    // re-uploaded only when that changes.
+    // re-uploaded only when that changes. A departed friend's image stays (one small bitmap per
+    // friend): removing it would race the asynchronous source update still drawing it.
     val peerImageKeys = remember { mutableMapOf<String, Triple<String, String?, Float>>() }
 
-    // Images of friends no longer shown, removed on the next update: the source update that drops
-    // their features applies asynchronously, and until then tiles still use the images.
-    val peerImagesToRemove = remember { mutableSetOf<String>() }
+    // The features last given to the peer source, to skip re-sending an unchanged set. Not Compose
+    // state: it's written in AndroidView's update, which would then run again.
+    val lastPeers = remember { arrayOfNulls<List<Triple<String, LatLng, String>>>(1) }
     val lifecycleOwner = LocalLifecycleOwner.current
 
     DisposableEffect(lifecycleOwner) {
@@ -301,18 +302,14 @@ fun MapComposable(
                                 iconIgnorePlacement(true),
                             ),
                         )
-                        // The pin drawn under the tap (topmost first), else one within a finger's
-                        // slop of it. A tap on empty map clears the selection, and so does tapping
-                        // the selected friend again.
-                        val slop = 8 * ctx.resources.displayMetrics.density
+                        // The pin drawn under the tap, topmost first. A tap on empty map (even just
+                        // beside a pin) clears the selection, and so does tapping the selected
+                        // friend again.
                         map.addOnMapClickListener { latLng ->
                             val pt = map.projection.toScreenLocation(latLng)
-
-                            fun peerIn(features: List<Feature>) = features.firstNotNullOfOrNull { it.getStringProperty(PEER_ID_PROPERTY) }
-                            val nearby = RectF(pt.x - slop, pt.y - slop, pt.x + slop, pt.y + slop)
                             val tapped =
-                                peerIn(map.queryRenderedFeatures(pt, PEER_LAYER_ID))
-                                    ?: peerIn(map.queryRenderedFeatures(nearby, PEER_LAYER_ID))
+                                map.queryRenderedFeatures(pt, PEER_LAYER_ID)
+                                    .firstNotNullOfOrNull { it.getStringProperty(PEER_ID_PROPERTY) }
                             currentOnSelectedUserIdChange(if (tapped == null || tapped == currentSelectedUserId) null else tapped)
                             // Empty map: leave the tap to other listeners.
                             tapped != null
@@ -330,8 +327,7 @@ fun MapComposable(
 
             val style = map.style ?: return@AndroidView
             // Peers: one feature each in the peer source, its icon an image keyed by friend.
-            val shown = mutableSetOf<String>()
-            val features =
+            val peers =
                 markerData.map { (user, meta, subtitle) ->
                     val (_, name, pinStyle) = meta
                     val pinAlpha = if (pinStyle == PeerPinStyle.DIMMED) 0.45f else 1f
@@ -342,20 +338,20 @@ fun MapComposable(
                         style.addImage(imageId, peerMarkerBitmap(context, name, shownSubtitle, pinAlpha))
                         peerImageKeys[imageId] = key
                     }
-                    shown += imageId
-                    Feature.fromGeometry(Point.fromLngLat(user.lng, user.lat)).apply {
-                        addStringProperty(PEER_ID_PROPERTY, user.userId)
-                        addStringProperty(PEER_ICON_PROPERTY, imageId)
-                    }
+                    Triple(user.userId, LatLng(user.lat, user.lng), imageId)
                 }
-            style.getSourceAs<GeoJsonSource>(PEER_SOURCE_ID)?.setGeoJson(FeatureCollection.fromFeatures(features))
-            // Last update's departures (unless back), now that the source has had a cycle to drop them.
-            (peerImagesToRemove - shown).forEach {
-                style.removeImage(it)
-                peerImageKeys.remove(it)
+            // Recomposition is frequent (own fixes, heading, pings); re-tile only on a change.
+            if (peers != lastPeers[0]) {
+                val features =
+                    peers.map { (userId, position, imageId) ->
+                        Feature.fromGeometry(Point.fromLngLat(position.longitude, position.latitude)).apply {
+                            addStringProperty(PEER_ID_PROPERTY, userId)
+                            addStringProperty(PEER_ICON_PROPERTY, imageId)
+                        }
+                    }
+                style.getSourceAs<GeoJsonSource>(PEER_SOURCE_ID)?.setGeoJson(FeatureCollection.fromFeatures(features))
+                lastPeers[0] = peers
             }
-            peerImagesToRemove.clear()
-            peerImagesToRemove += peerImageKeys.keys - shown
         },
         modifier = modifier,
     )
