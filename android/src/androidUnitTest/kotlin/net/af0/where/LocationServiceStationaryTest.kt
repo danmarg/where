@@ -48,6 +48,7 @@ class LocationServiceStationaryTest {
     // The side effects stationary mode drives, as the provider sees them.
     private var armed = false
     private var requested: LocationAccuracy? = null
+    private var requestCalls = 0
 
     @Before
     fun setup() {
@@ -62,6 +63,7 @@ class LocationServiceStationaryTest {
         every { mockLocationProvider.requestPassiveUpdates() } returns true
         every { mockLocationProvider.requestActiveUpdates(any(), any(), any()) } answers {
             requested = firstArg()
+            requestCalls++
             true
         }
         every { mockLocationProvider.removeActiveUpdates() } answers { requested = null }
@@ -141,6 +143,8 @@ class LocationServiceStationaryTest {
         assertEquals(expected, armed, "trigger armed: $message")
         assertEquals(expected, requested == LocationAccuracy.PASSIVE, "requested $requested: $message")
     }
+
+    private fun requestCount() = requestCalls
 
     /** The trigger fires: one-shot, so it's disarmed first, as the sensor does. */
     private fun fireMotion() {
@@ -251,17 +255,24 @@ class LocationServiceStationaryTest {
 
             service.noteFix(fix())
             assertNotNull(service.stationary.anchor, "the first credible fix seeds the anchor")
+            // A millisecond apart: the policy ignores a fix no newer than the last one.
+            setElapsed(elapsed() + 1)
             service.noteFix(fix(northMeters = 1_000.0, accuracy = 500f))
             assertStationary(service, true, "a coarse fix isn't movement")
+            setElapsed(elapsed() + 1)
             service.noteFix(fix(northMeters = 1_000.0, ageMs = 10 * MINUTE))
             assertStationary(service, true, "a stale fix isn't movement")
+            setElapsed(elapsed() + 1)
             service.noteFix(fix(northMeters = 1_000.0, provider = "network"))
             assertStationary(service, true, "a network fix isn't movement")
+            setElapsed(elapsed() + 1)
             service.noteFix(fix(northMeters = 100.0))
             assertStationary(service, true, "under the movement radius")
+            setElapsed(elapsed() + 1)
             service.noteFix(fix(northMeters = 280.0, accuracy = 90f))
             assertStationary(service, true, "within 200 m plus both fixes' error")
 
+            setElapsed(elapsed() + 1)
             service.noteFix(fix(northMeters = 1_000.0))
             setElapsed(elapsed() + 1)
             service.noteFix(fix(northMeters = 1_020.0))
@@ -284,9 +295,11 @@ class LocationServiceStationaryTest {
             assertEquals(start, service.stationary.lastMovedAt)
 
             // A real move does, once confirmed.
+            setElapsed(start + 10 * MINUTE + 1)
             listener(fix(northMeters = 500.0))
+            setElapsed(start + 10 * MINUTE + 2)
             listener(fix(northMeters = 520.0))
-            assertEquals(start + 10 * MINUTE, service.stationary.lastMovedAt)
+            assertEquals(start + 10 * MINUTE + 2, service.stationary.lastMovedAt)
             service.enterStationaryIfIdle(start + IDLE)
             assertStationary(service, false)
             controller.destroy()
@@ -449,6 +462,72 @@ class LocationServiceStationaryTest {
             fakeLocationSource.wakePoll()
             advanceUntilIdle()
             io.mockk.coVerify(exactly = 2) { mockLocationProvider.getCurrentLocation(long) }
+            controller.destroy()
+        }
+
+    @Test
+    fun aTriggerAfterMaintenanceLeftIsIgnored() =
+        runTest {
+            val (controller, service) = buildService()
+            val motionLock = org.robolectric.shadows.ShadowPowerManager.getLatestWakeLock()
+            goStationary(service)
+            val staleTrigger = onMotion.captured
+            // The foreground ends stationary first; the trigger's event was already queued.
+            service.maintainStationary(inForeground = true)
+            assertStationary(service, false)
+            advanceUntilIdle()
+            val registrations = requestCount()
+            staleTrigger.invoke()
+            advanceUntilIdle()
+            assertFalse(motionLock.isHeld, "no second wake")
+            assertEquals(registrations, requestCount(), "no re-registration")
+            assertStationary(service, false)
+
+            // And the next stationary period arms afresh.
+            setElapsed(elapsed() + IDLE)
+            service.enterStationaryIfIdle(elapsed())
+            assertStationary(service, true)
+            controller.destroy()
+        }
+
+    @Test
+    fun maintenanceAfterATriggerIsANoOp() =
+        runTest {
+            val (controller, service) = buildService()
+            goStationary(service)
+            fireMotion()
+            val registrations = requestCount()
+            service.maintainStationary(inForeground = true)
+            service.maintainStationary(inForeground = false)
+            assertEquals(registrations, requestCount())
+            assertStationary(service, false)
+            controller.destroy()
+        }
+
+    @Test
+    fun aSilentlyDroppedPassiveListenerIsReRegisteredWhileStationary() =
+        runTest {
+            var wall = 1_000_000_000L
+            LocationService.clock = { wall }
+            val (controller, service) = buildService()
+            goStationary(service)
+            // No passive callback since, though the trigger stays armed: an OEM dropped it.
+            wall += LocationService.STALE_REGISTRATION_THRESHOLD_MS - 1
+            service.maintainStationary(inForeground = false)
+            verify(exactly = 0) { mockLocationProvider.removePassiveUpdates() }
+
+            wall += 1
+            service.maintainStationary(inForeground = false)
+            verify(exactly = 1) { mockLocationProvider.removePassiveUpdates() }
+            verify(exactly = 2) { mockLocationProvider.requestPassiveUpdates() }
+            assertStationary(service, true, "re-registered; still stationary")
+
+            // Re-registering fails: active tracking resumes.
+            every { mockLocationProvider.requestPassiveUpdates() } returns false
+            wall += LocationService.STALE_REGISTRATION_THRESHOLD_MS
+            service.maintainStationary(inForeground = false)
+            assertStationary(service, false)
+            assertEquals(LocationAccuracy.BALANCED, requested)
             controller.destroy()
         }
 

@@ -176,6 +176,9 @@ class LocationService : Service() {
     @VisibleForTesting
     internal var lastRegistrationTime: Long = 0L
 
+    // [clock] time of the last passive registration; see refreshQuietPassiveListener.
+    private var passiveRegistrationTime: Long = 0L
+
     private val pendingFriendSends = Channel<String>(Channel.UNLIMITED)
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -678,6 +681,7 @@ class LocationService : Service() {
 
         if (!isPassiveRegistered) {
             isPassiveRegistered = locationProvider.requestPassiveUpdates()
+            passiveRegistrationTime = clock()
             if (isPassiveRegistered) Log.i(TAG, "Passive location updates registered.")
         }
 
@@ -1027,6 +1031,7 @@ class LocationService : Service() {
     @VisibleForTesting
     internal fun maintainStationary(inForeground: Boolean) {
         if (stationary.mode != StationaryPolicy.Mode.STATIONARY) return
+        if (!inForeground) refreshQuietPassiveListener()
         val reason =
             when {
                 inForeground -> "app in foreground"
@@ -1044,6 +1049,21 @@ class LocationService : Service() {
     private fun resumeFromStationary(reason: String) {
         ensureLocationRegistration()
         Log.i(TAG, "Leaving stationary ($reason); priority=$effectivePriority")
+    }
+
+    /**
+     * While stationary the passive listener is the only registration, and the watchdog is off (it
+     * can legitimately hear nothing for hours). An OEM can drop it without telling us, so after
+     * [STALE_REGISTRATION_THRESHOLD_MS] without a callback it's registered again: cheap, and it
+     * doesn't cost leaving stationary on a guess. If that fails, maintainStationary leaves.
+     */
+    private fun refreshQuietPassiveListener() {
+        val now = clock()
+        if (now - maxOf(lastLocationCallbackTime, passiveRegistrationTime) < STALE_REGISTRATION_THRESHOLD_MS) return
+        Log.i(TAG, "Stationary: no passive callback for ${STALE_REGISTRATION_THRESHOLD_MS / 60_000}min; re-registering it")
+        locationProvider.removePassiveUpdates()
+        isPassiveRegistered = locationProvider.requestPassiveUpdates()
+        passiveRegistrationTime = now
     }
 
     /** Every fix, from the providers' listeners and the heartbeat, for [StationaryPolicy.onFix]. */

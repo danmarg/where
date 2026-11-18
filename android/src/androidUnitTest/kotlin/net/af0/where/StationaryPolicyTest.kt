@@ -53,16 +53,24 @@ class StationaryPolicyTest {
         assertFalse(policy.onFix(fix(t), t))
         assertEquals(0L, policy.lastMovedAt, "seeding the anchor isn't a move")
 
-        policy.onFix(fix(t, northMeters = 2_000.0, gps = false), t)
-        policy.onFix(fix(t, northMeters = 2_000.0, accuracy = 500.0), t)
-        policy.onFix(fix(t, northMeters = 2_000.0, ageMs = 2 * 60_000L), t)
-        policy.onFix(fix(t, northMeters = 2_000.0, accuracy = null), t)
+        // Each pair: a fix past the threshold, then its would-be confirmation.
+        for ((i, bad) in listOf<(Long) -> StationaryPolicy.Fix>(
+            { at -> fix(at, northMeters = 2_000.0, gps = false) },
+            { at -> fix(at, northMeters = 2_000.0, accuracy = 500.0) },
+            { at -> fix(at, northMeters = 2_000.0, ageMs = 2 * 60_000L) },
+            { at -> fix(at, northMeters = 2_000.0, accuracy = null) },
+        ).withIndex()) {
+            val at = t + 1_000L * (2 * i + 1)
+            policy.onFix(bad(at), at)
+            policy.onFix(bad(at + 1), at + 1)
+        }
         assertEquals(0L, policy.lastMovedAt, "network, coarse, stale or accuracy-less fixes aren't moves")
 
-        policy.onFix(fix(t, northMeters = 2_000.0), t)
+        val u = t + 60_000L
+        policy.onFix(fix(u, northMeters = 2_000.0), u)
         assertEquals(0L, policy.lastMovedAt, "one fix past the threshold awaits confirmation")
-        policy.onFix(fix(t + 1, northMeters = 2_050.0), t + 1)
-        assertEquals(t + 1, policy.lastMovedAt)
+        policy.onFix(fix(u + 1, northMeters = 2_050.0), u + 1)
+        assertEquals(u + 1, policy.lastMovedAt)
     }
 
     @Test
@@ -82,11 +90,11 @@ class StationaryPolicyTest {
         stationaryAt(idle)
         val t = idle + 60_000L
         assertFalse(policy.onFix(fix(t), t), "seeds the anchor")
-        assertFalse(policy.onFix(fix(t, northMeters = 100.0), t))
-        assertFalse(policy.onFix(fix(t, northMeters = 1_000.0), t), "unconfirmed")
-        assertTrue(policy.onFix(fix(t + 1, northMeters = 1_020.0), t + 1))
+        assertFalse(policy.onFix(fix(t + 1, northMeters = 100.0), t + 1))
+        assertFalse(policy.onFix(fix(t + 2, northMeters = 1_000.0), t + 2), "unconfirmed")
+        assertTrue(policy.onFix(fix(t + 3, northMeters = 1_020.0), t + 3))
         assertEquals(Mode.MOVING, policy.mode)
-        assertEquals(t + 1, policy.lastMovedAt)
+        assertEquals(t + 3, policy.lastMovedAt)
     }
 
     @Test
@@ -109,8 +117,23 @@ class StationaryPolicyTest {
         val t = idle + 60_000L
         assertFalse(policy.onFix(fix(t, northMeters = 300.0), t), "inside its error circle: the same place, sharper")
         assertEquals(10.0, policy.anchor?.accuracyMeters)
-        assertFalse(policy.onFix(fix(t, northMeters = 800.0), t))
-        assertTrue(policy.onFix(fix(t + 1, northMeters = 820.0), t + 1), "500 m from the sharper anchor, confirmed")
+        assertFalse(policy.onFix(fix(t + 1, northMeters = 800.0), t + 1))
+        assertTrue(policy.onFix(fix(t + 2, northMeters = 820.0), t + 2), "500 m from the sharper anchor, confirmed")
+    }
+
+    @Test
+    fun oneFixDeliveredTwiceDoesNotConfirmItsOwnMove() {
+        policy.startTracking(0L)
+        policy.onFix(fix(0L), 0L)
+        stationaryAt(idle)
+        val t = idle + 60_000L
+        // An outlier, heard by the active (or heartbeat) listener and again by the passive one.
+        val outlier = fix(t, northMeters = 1_000.0)
+        assertFalse(policy.onFix(outlier, t))
+        assertFalse(policy.onFix(outlier, t + 5), "the same observation again")
+        assertFalse(policy.onFix(fix(t - 1, northMeters = 1_010.0), t + 6), "an older fix arriving late")
+        assertEquals(Mode.STATIONARY, policy.mode)
+        assertTrue(policy.onFix(fix(t + 1_000L, northMeters = 1_020.0), t + 1_000L), "a second, later observation does")
     }
 
     @Test

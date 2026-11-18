@@ -75,6 +75,10 @@ class StationaryPolicy(
 
     // A credible fix past the threshold, awaiting a second to confirm the move.
     private var unconfirmedMove: Fix? = null
+
+    // The newest fix seen, by when it was taken: one fix often arrives twice (the passive listener
+    // also hears this app's own GPS fixes, the heartbeat's included).
+    private var newestFixAt = Long.MIN_VALUE
     private var lastLongFixAt = 0L
 
     /** Tracking (re)starts: a fresh countdown. A no-op while already tracking. */
@@ -131,6 +135,10 @@ class StationaryPolicy(
         fix: Fix,
         now: Long,
     ): Boolean {
+        // A repeat (or an older fix arriving late) is no new observation: counting it twice would
+        // let one outlier confirm its own move.
+        if (fix.elapsedMs <= newestFixAt) return false
+        newestFixAt = fix.elapsedMs
         val fresh = now - fix.elapsedMs <= credibleMaxAgeMs
         if (fresh && (fix.accuracyMeters ?: Double.MAX_VALUE) <= fallbackAnchorMaxAccuracyMeters) latestFix = fix
         if (!isCredible(fix, now)) return false

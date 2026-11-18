@@ -174,4 +174,105 @@ class FdroidMotionTriggerTest {
             assertNull(result.await(), "no fix in 10 s")
             assertTrue(shadowOf(lm).getLocationUpdateListeners().isEmpty(), "the single update was cancelled")
         }
+
+    @Test
+    fun oneGpsFixHeardByBothListenersCountsOnce() {
+        shadowOf(lm).setProviderEnabled(LocationManager.GPS_PROVIDER, true)
+        shadowOf(lm).setProviderEnabled(LocationManager.PASSIVE_PROVIDER, true)
+        val provider = provider()
+        val heard = mutableListOf<Location>()
+        provider.setFixListener { heard += it }
+        assertTrue(provider.requestActiveUpdates(LocationAccuracy.BALANCED, 60_000L, 10_000L))
+        assertTrue(provider.requestPassiveUpdates())
+
+        val policy = StationaryPolicy()
+        policy.startTracking(0L)
+        val now = SystemClock.elapsedRealtime()
+
+        fun deliver(north: Double) {
+            shadowOf(lm).simulateLocation(
+                Location(LocationManager.GPS_PROVIDER).apply {
+                    latitude = 37.0 + north / 111_195.0
+                    longitude = -122.0
+                    accuracy = 10f
+                    elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+                },
+            )
+            shadowOf(Looper.getMainLooper()).idle()
+        }
+        deliver(0.0)
+        policy.entered(policy.lastMovedAt + policy.idleMs)
+        heard.forEach { policy.onFix(it.toFix(), now) }
+        heard.clear()
+
+        // One outlier fix, which the passive listener hears too. Past both listeners' min time.
+        org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMinutes(2))
+        deliver(1_000.0)
+        assertTrue(heard.isNotEmpty(), "the fix reached the service")
+        val later = SystemClock.elapsedRealtime()
+        val moved = heard.map { policy.onFix(it.toFix(), later) }
+        assertTrue(moved.none { it }, "heard ${heard.size}x; one observation mustn't confirm itself")
+        assertEquals(StationaryPolicy.Mode.STATIONARY, policy.mode)
+    }
+
+    private fun Location.toFix() =
+        StationaryPolicy.Fix(
+            latitude,
+            longitude,
+            accuracy.toDouble(),
+            provider == LocationManager.GPS_PROVIDER,
+            elapsedRealtimeNanos / 1_000_000,
+        )
+
+    @Test
+    fun aStaleEventFromAnEarlierArmingLeavesTheNewOneArmed() {
+        shadowOf(lm).setProviderEnabled(LocationManager.GPS_PROVIDER, true)
+        val provider = providerWithSensor()
+        val armed = mutableListOf<android.hardware.TriggerEventListener>()
+        every { sensorManager.requestTriggerSensor(capture(armed), any()) } returns true
+        var fired = 0
+        assertTrue(provider.armMotionTrigger { fired++ })
+        provider.cancelMotionTrigger()
+        assertTrue(provider.armMotionTrigger { fired++ })
+        assertEquals(2, armed.size)
+
+        armed[0].onTrigger(null)
+        assertEquals(0, fired, "the cancelled arming's late event")
+        assertTrue(provider.armMotionTrigger { fired++ })
+        assertEquals(2, armed.size, "still armed: no new request")
+
+        armed[1].onTrigger(null)
+        armed[1].onTrigger(null)
+        assertEquals(1, fired, "one wake per arming")
+        assertTrue(provider.armMotionTrigger { fired++ })
+        assertEquals(3, armed.size, "a fired trigger is disarmed, so it's requested again")
+    }
+
+    @Test
+    fun aLongFixTimingOutRemovesItsListener() =
+        runTest {
+            shadowOf(lm).setProviderEnabled(LocationManager.GPS_PROVIDER, true)
+            val provider = provider()
+            val result = async { provider.getCurrentLocation(45_000L) }
+            runCurrent()
+            assertEquals(1, shadowOf(lm).getLocationUpdateListeners().size)
+            advanceTimeBy(45_001L)
+            runCurrent()
+            assertNull(result.await())
+            assertTrue(shadowOf(lm).getLocationUpdateListeners().isEmpty(), "removed on timeout")
+        }
+
+    @Test
+    fun aLongFixCancelledMidWaitRemovesItsListener() =
+        runTest {
+            shadowOf(lm).setProviderEnabled(LocationManager.GPS_PROVIDER, true)
+            val provider = provider()
+            val result = async { provider.getCurrentLocation(45_000L) }
+            runCurrent()
+            assertEquals(1, shadowOf(lm).getLocationUpdateListeners().size)
+            advanceTimeBy(20_000L)
+            result.cancel()
+            runCurrent()
+            assertTrue(shadowOf(lm).getLocationUpdateListeners().isEmpty(), "removed on cancellation (service destroyed)")
+        }
 }
