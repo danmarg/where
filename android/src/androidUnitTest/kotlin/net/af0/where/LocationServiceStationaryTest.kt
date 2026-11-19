@@ -43,6 +43,7 @@ class LocationServiceStationaryTest {
     private val friend = mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)
     private val onMotion = slot<() -> Unit>()
     private var activeFix: ((Location) -> Unit)? = null
+    private var onLocation: ((Double, Double, Double?) -> Unit)? = null
     private var triggerAvailable = true
 
     // The side effects stationary mode drives, as the provider sees them.
@@ -74,6 +75,7 @@ class LocationServiceStationaryTest {
             triggerAvailable
         }
         every { mockLocationProvider.setFixListener(any()) } answers { activeFix = firstArg() }
+        every { mockLocationProvider.init(any(), any()) } answers { onLocation = secondArg() }
         io.mockk.coEvery { mockLocationProvider.getCurrentLocation(any()) } returns null
         io.mockk.coEvery { mockLocationProvider.getLastLocation() } returns null
 
@@ -506,8 +508,10 @@ class LocationServiceStationaryTest {
     fun aSilentlyDroppedPassiveListenerIsReRegisteredWhileStationary() =
         runTest {
             val (controller, service) = buildService()
-            // Long after the passive registration at startup: entering is itself a sign of life.
+            // Long after the passive registration at startup, but the passive listener heard this
+            // app's BALANCED fixes until now.
             setElapsed(service.stationary.lastMovedAt + 2 * LocationService.STALE_REGISTRATION_THRESHOLD_MS)
+            onLocation!!(37.0, -122.0, null)
             service.enterStationaryIfIdle(elapsed())
             assertStationary(service, true)
             service.maintainStationary(inForeground = false)
@@ -531,9 +535,31 @@ class LocationServiceStationaryTest {
             assertStationary(service, false)
             assertEquals(LocationAccuracy.BALANCED, requested)
             every { mockLocationProvider.requestPassiveUpdates() } returns true
+            val attempts = 4 // startup, the refresh that worked, the one that failed, leaving's retry
+            verify(exactly = attempts) { mockLocationProvider.requestPassiveUpdates() }
             service.onStartCommand(null, 0, 1)
             advanceUntilIdle()
+            verify(exactly = attempts) { mockLocationProvider.requestPassiveUpdates() }
+            assertFalse(service.isPassiveRegistered, "not retried on every call")
+            setElapsed(elapsed() + LocationService.PASSIVE_RETRY_INTERVAL_MS)
+            service.onStartCommand(null, 0, 2)
+            advanceUntilIdle()
             assertTrue(service.isPassiveRegistered, "retried though the BALANCED registration is unchanged")
+            controller.destroy()
+        }
+
+    @Test
+    fun aPassiveListenerDroppedBeforeEnteringIsRefreshedOnTheFirstWake() =
+        runTest {
+            val (controller, service) = buildService()
+            // No passive callback since startup: an OEM dropped it during the countdown. Entering
+            // re-registers nothing passive, so it's no sign of life.
+            setElapsed(service.stationary.lastMovedAt + 2 * LocationService.STALE_REGISTRATION_THRESHOLD_MS)
+            service.enterStationaryIfIdle(elapsed())
+            assertStationary(service, true)
+            service.maintainStationary(inForeground = false)
+            verify(exactly = 1) { mockLocationProvider.removePassiveUpdates() }
+            assertStationary(service, true)
             controller.destroy()
         }
 

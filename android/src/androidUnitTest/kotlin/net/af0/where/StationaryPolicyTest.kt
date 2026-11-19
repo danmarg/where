@@ -153,9 +153,42 @@ class StationaryPolicyTest {
         val outlier = fix(t, northMeters = 1_000.0)
         assertFalse(policy.onFix(outlier, t))
         assertFalse(policy.onFix(outlier, t + 5), "the same observation again")
-        assertFalse(policy.onFix(fix(t - 1, northMeters = 1_010.0), t + 6), "an older fix arriving late")
         assertEquals(Mode.STATIONARY, policy.mode)
-        assertTrue(policy.onFix(fix(t + 1_000L, northMeters = 1_020.0), t + 1_000L), "a second, later observation does")
+        assertTrue(policy.onFix(fix(t + 1_000L, northMeters = 1_020.0), t + 1_000L), "a second observation does")
+    }
+
+    @Test
+    fun aDistinctFixTakenEarlierButDeliveredLateConfirms() {
+        policy.startTracking(0L)
+        policy.onFix(fix(0L), 0L)
+        stationaryAt(idle)
+        val t = idle + 60_000L
+        // This app's GPS fix, then another app's earlier one through the passive listener.
+        assertFalse(policy.onFix(fix(t, northMeters = 1_000.0), t))
+        assertTrue(policy.onFix(fix(t - 5_000L, northMeters = 990.0), t + 1), "two observations, whatever the order")
+    }
+
+    @Test
+    fun aLateCopyOfANearFixDoesNotCancelAPendingMove() {
+        policy.startTracking(0L)
+        policy.onFix(fix(0L), 0L)
+        stationaryAt(idle)
+        val t = idle + 60_000L
+        val near = fix(t, northMeters = 20.0)
+        assertFalse(policy.onFix(near, t))
+        assertFalse(policy.onFix(fix(t + 10_000L, northMeters = 1_000.0), t + 10_000L))
+        // The passive listener's copy of the near fix, delivered after the departure.
+        assertFalse(policy.onFix(near, t + 10_001L))
+        assertTrue(policy.onFix(fix(t + 11_000L, northMeters = 1_020.0), t + 11_000L), "still confirms the next fix")
+    }
+
+    @Test
+    fun anOlderFixDeliveredLateIsNotTheFallbackAnchor() {
+        policy.startTracking(0L)
+        policy.onFix(fix(idle - 1_000L, northMeters = 500.0, accuracy = 30.0, gps = false), idle - 1_000L)
+        policy.onFix(fix(idle - 3_000L, accuracy = 30.0, gps = false), idle - 500L)
+        stationaryAt(idle)
+        assertEquals(37.0 + 500.0 / 111_195.0, policy.anchor?.lat, "the newest fix, not the last delivered")
     }
 
     @Test

@@ -1,5 +1,6 @@
 package net.af0.where
 
+import kotlin.math.abs
 import kotlin.math.asin
 import kotlin.math.cos
 import kotlin.math.min
@@ -134,7 +135,9 @@ class StationaryPolicy(
         // From the future (a bad HAL or a mock provider): no evidence of anything.
         if (fix.elapsedMs > now) return false
         val fresh = now - fix.elapsedMs <= credibleMaxAgeMs
-        if (fresh && (fix.accuracyMeters ?: Double.MAX_VALUE) <= fallbackAnchorMaxAccuracyMeters) latestFix = fix
+        val accurateEnough = (fix.accuracyMeters ?: Double.MAX_VALUE) <= fallbackAnchorMaxAccuracyMeters
+        // Fixes can arrive out of order (another app's, through the passive listener): keep the newest.
+        if (fresh && accurateEnough && fix.elapsedMs > (latestFix?.elapsedMs ?: Long.MIN_VALUE)) latestFix = fix
         if (!isCredible(fix, now)) return false
         val accuracy = fix.accuracyMeters ?: return false
         val last = anchor
@@ -145,20 +148,24 @@ class StationaryPolicy(
         }
         val lastAccuracy = last.accuracyMeters ?: 0.0
         val distance = distanceMeters(last, fix)
+        val pending = unconfirmedMove
         if (distance < moveRadiusMeters + lastAccuracy + accuracy) {
-            unconfirmedMove = null
+            // Back at the place cancels a candidate move, but only if taken after it: an older
+            // fix arriving late (or a copy of one) says nothing about where the device went since.
+            if (pending == null || fix.elapsedMs > pending.elapsedMs) unconfirmedMove = null
             // Not a move. A sharper fix inside the anchor's own error circle is the same place,
             // better measured: it narrows the next threshold (and can't creep along with a walk).
             if (accuracy < lastAccuracy && distance <= lastAccuracy) anchor = fix
             return false
         }
-        val pending = unconfirmedMove
-        // The same fix again, or an older one arriving late, is no second observation: one fix
-        // often arrives twice (the passive listener also hears this app's own GPS fixes, the
-        // heartbeat's included), and counting it would let one outlier confirm its own move.
-        if (pending != null && fix.elapsedMs <= pending.elapsedMs) return false
-        if (pending == null || fix.elapsedMs - pending.elapsedMs > confirmWindowMs) {
-            unconfirmedMove = fix
+        // The same fix again is no second observation: one fix often arrives twice (the passive
+        // listener also hears this app's own GPS fixes, the heartbeat's included), and counting it
+        // would let one outlier confirm its own move. A copy has the same time; a distinct fix,
+        // even one taken earlier and delivered late, is a second observation.
+        if (pending != null && fix.elapsedMs == pending.elapsedMs) return false
+        if (pending == null || abs(fix.elapsedMs - pending.elapsedMs) > confirmWindowMs) {
+            // The newer of the two is the candidate: it expires later.
+            if (pending == null || fix.elapsedMs > pending.elapsedMs) unconfirmedMove = fix
             return false
         }
         unconfirmedMove = null

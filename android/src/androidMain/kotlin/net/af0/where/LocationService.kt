@@ -176,10 +176,13 @@ class LocationService : Service() {
     @VisibleForTesting
     internal var lastRegistrationTime: Long = 0L
 
-    // [elapsedClock] time of the last sign of life a quiet passive listener is measured from: a
-    // location callback, a passive registration, or an active (re)registration such as entering
-    // stationary. See refreshQuietPassiveListener.
+    // [elapsedClock] time of the passive listener's last sign of life: a location callback or a
+    // successful passive registration. See refreshQuietPassiveListener.
     private var lastPassiveSignAt: Long = 0L
+
+    // [elapsedClock] time of the last passive registration attempt after one failed; see
+    // updateRegistrations.
+    private var lastPassiveRetryAt: Long? = null
 
     private val pendingFriendSends = Channel<String>(Channel.UNLIMITED)
 
@@ -679,12 +682,20 @@ class LocationService : Service() {
             return
         }
 
-        // Before the early return: a passive registration that failed is retried on every call,
-        // or a BALANCED listener could stay on for good (stationary needs passive to enter).
-        if (!isPassiveRegistered) {
+        // Before the early return: a passive registration that failed is retried, or a BALANCED
+        // listener could stay on for good (stationary needs passive to enter). At most once a
+        // minute: this runs on every poll iteration, and a disabled provider refuses every time.
+        val now = elapsedClock()
+        val retryDue = lastPassiveRetryAt.let { it == null || now - it >= PASSIVE_RETRY_INTERVAL_MS }
+        if (!isPassiveRegistered && retryDue) {
             isPassiveRegistered = locationProvider.requestPassiveUpdates()
-            lastPassiveSignAt = elapsedClock()
-            if (isPassiveRegistered) Log.i(TAG, "Passive location updates registered.")
+            if (isPassiveRegistered) {
+                lastPassiveSignAt = now
+                lastPassiveRetryAt = null
+                Log.i(TAG, "Passive location updates registered.")
+            } else {
+                lastPassiveRetryAt = now
+            }
         }
 
         val priority = effectivePriority
@@ -711,7 +722,6 @@ class LocationService : Service() {
         if (isRegistered) stationary.startTracking(elapsedClock())
         if (isRegistered) {
             lastRegistrationTime = clock()
-            lastPassiveSignAt = elapsedClock()
             lastLocationCallbackTime = 0L // reset so watchdog waits for the first callback from this registration
             Log.i(TAG, "Location updates registered successfully with priority=$priority.")
         } else {
@@ -1061,17 +1071,19 @@ class LocationService : Service() {
     /**
      * While stationary the passive listener is the only registration, and the watchdog is off (it
      * can legitimately hear nothing for hours). An OEM can drop it without telling us, so after
-     * [STALE_REGISTRATION_THRESHOLD_MS] without a callback it's registered again: cheap, and it
-     * doesn't cost leaving stationary on a guess. Returns false if that fails: maintainStationary
-     * then leaves.
+     * [STALE_REGISTRATION_THRESHOLD_MS] without a callback or a registration it's registered again:
+     * cheap, and it doesn't cost leaving stationary on a guess. (Before stationary the passive
+     * listener also hears this app's own BALANCED fixes, so on entering it's rarely due.) Returns
+     * false if that fails: maintainStationary then leaves.
      */
     private fun refreshQuietPassiveListener(): Boolean {
         val now = elapsedClock()
-        if (now - lastPassiveSignAt < STALE_REGISTRATION_THRESHOLD_MS) return true
-        Log.i(TAG, "Stationary: no passive callback for ${STALE_REGISTRATION_THRESHOLD_MS / 60_000}min; re-registering it")
+        val quietMs = now - lastPassiveSignAt
+        if (quietMs < STALE_REGISTRATION_THRESHOLD_MS) return true
+        Log.i(TAG, "Stationary: no passive callback or registration for ${quietMs / 60_000}min; re-registering it")
         locationProvider.removePassiveUpdates()
         isPassiveRegistered = locationProvider.requestPassiveUpdates()
-        lastPassiveSignAt = now
+        if (isPassiveRegistered) lastPassiveSignAt = now
         return isPassiveRegistered
     }
 
@@ -1304,6 +1316,9 @@ class LocationService : Service() {
          * registrations without any error callback.
          */
         const val STALE_REGISTRATION_THRESHOLD_MS = 15 * 60 * 1000L
+
+        /** How often a failed passive registration is retried. */
+        const val PASSIVE_RETRY_INTERVAL_MS = 60_000L
 
         /** Overridable in tests. */
         var clock: () -> Long = { System.currentTimeMillis() }
