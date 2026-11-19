@@ -202,27 +202,18 @@ class FdroidMotionTriggerTest {
         }
         deliver(0.0)
         policy.entered(policy.lastMovedAt + policy.idleMs)
-        heard.forEach { policy.onFix(it.toFix(), now) }
+        heard.forEach { policy.onFix(it.toStationaryFix(), now) }
         heard.clear()
 
         // One outlier fix, which the passive listener hears too. Past both listeners' min time.
         org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMinutes(2))
         deliver(1_000.0)
-        assertTrue(heard.isNotEmpty(), "the fix reached the service")
+        assertEquals(2, heard.size, "heard by the GPS and the passive listener")
         val later = SystemClock.elapsedRealtime()
-        val moved = heard.map { policy.onFix(it.toFix(), later) }
+        val moved = heard.map { policy.onFix(it.toStationaryFix(), later) }
         assertTrue(moved.none { it }, "heard ${heard.size}x; one observation mustn't confirm itself")
         assertEquals(StationaryPolicy.Mode.STATIONARY, policy.mode)
     }
-
-    private fun Location.toFix() =
-        StationaryPolicy.Fix(
-            latitude,
-            longitude,
-            accuracy.toDouble(),
-            provider == LocationManager.GPS_PROVIDER,
-            elapsedRealtimeNanos / 1_000_000,
-        )
 
     @Test
     fun aStaleEventFromAnEarlierArmingLeavesTheNewOneArmed() {

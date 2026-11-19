@@ -122,6 +122,28 @@ class StationaryPolicyTest {
     }
 
     @Test
+    fun aCredibleFixArrivingAfterANewerNetworkOneStillCounts() {
+        policy.startTracking(0L)
+        policy.onFix(fix(0L), 0L)
+        stationaryAt(idle)
+        val t = idle + 60_000L
+        policy.onFix(fix(t, northMeters = 1_000.0), t)
+        // Another app's network fix, taken later, is delivered before our GPS one.
+        policy.onFix(fix(t + 3_000L, northMeters = 1_000.0, accuracy = 30.0, gps = false), t + 3_500L)
+        assertTrue(policy.onFix(fix(t + 1_000L, northMeters = 1_020.0), t + 4_000L))
+    }
+
+    @Test
+    fun aFixFromTheFutureIsIgnored() {
+        policy.startTracking(0L)
+        assertFalse(policy.onFix(fix(10 * idle), 1_000L))
+        assertNull(policy.anchor)
+        // And blinds nothing: a real fix afterwards seeds the anchor.
+        policy.onFix(fix(2_000L), 2_000L)
+        assertEquals(37.0, policy.anchor?.lat)
+    }
+
+    @Test
     fun oneFixDeliveredTwiceDoesNotConfirmItsOwnMove() {
         policy.startTracking(0L)
         policy.onFix(fix(0L), 0L)

@@ -176,8 +176,10 @@ class LocationService : Service() {
     @VisibleForTesting
     internal var lastRegistrationTime: Long = 0L
 
-    // [clock] time of the last passive registration; see refreshQuietPassiveListener.
-    private var passiveRegistrationTime: Long = 0L
+    // [elapsedClock] time of the last sign of life a quiet passive listener is measured from: a
+    // location callback, a passive registration, or an active (re)registration such as entering
+    // stationary. See refreshQuietPassiveListener.
+    private var lastPassiveSignAt: Long = 0L
 
     private val pendingFriendSends = Channel<String>(Channel.UNLIMITED)
 
@@ -294,6 +296,7 @@ class LocationService : Service() {
         locationProvider = locationProviderOverride ?: createLocationProvider()
         locationProvider.init(this) { lat, lng, bearing ->
             lastLocationCallbackTime = clock()
+            lastPassiveSignAt = elapsedClock()
             locationSource.onLocation(lat, lng, bearing)
         }
         locationProvider.setFixListener { noteFix(it) }
@@ -676,14 +679,16 @@ class LocationService : Service() {
             return
         }
 
-        val priority = effectivePriority
-        if (isRegistered && registeredPriority == priority && registeredInterval == currentInterval) return
-
+        // Before the early return: a passive registration that failed is retried on every call,
+        // or a BALANCED listener could stay on for good (stationary needs passive to enter).
         if (!isPassiveRegistered) {
             isPassiveRegistered = locationProvider.requestPassiveUpdates()
-            passiveRegistrationTime = clock()
+            lastPassiveSignAt = elapsedClock()
             if (isPassiveRegistered) Log.i(TAG, "Passive location updates registered.")
         }
+
+        val priority = effectivePriority
+        if (isRegistered && registeredPriority == priority && registeredInterval == currentInterval) return
 
         // Keep max delivery delay tight (10s) so the provider doesn't batch up to a full minute of
         // fixes before delivering — that batching can mask "moving" updates by up to 60s in
@@ -706,6 +711,7 @@ class LocationService : Service() {
         if (isRegistered) stationary.startTracking(elapsedClock())
         if (isRegistered) {
             lastRegistrationTime = clock()
+            lastPassiveSignAt = elapsedClock()
             lastLocationCallbackTime = 0L // reset so watchdog waits for the first callback from this registration
             Log.i(TAG, "Location updates registered successfully with priority=$priority.")
         } else {
@@ -1031,13 +1037,14 @@ class LocationService : Service() {
     @VisibleForTesting
     internal fun maintainStationary(inForeground: Boolean) {
         if (stationary.mode != StationaryPolicy.Mode.STATIONARY) return
-        if (!inForeground) refreshQuietPassiveListener()
         val reason =
             when {
                 inForeground -> "app in foreground"
                 !isRegistered || !isPassiveRegistered -> "passive updates lost"
                 // A no-op while armed; re-arms after a trigger the provider lost.
                 !locationProvider.armMotionTrigger { onMotionTrigger() } -> "motion trigger unavailable"
+                // Only when nothing else ends stationary, so it isn't re-registered just to go.
+                !refreshQuietPassiveListener() -> "passive updates lost"
                 else -> return
             }
         stationary.leave(elapsedClock())
@@ -1055,29 +1062,23 @@ class LocationService : Service() {
      * While stationary the passive listener is the only registration, and the watchdog is off (it
      * can legitimately hear nothing for hours). An OEM can drop it without telling us, so after
      * [STALE_REGISTRATION_THRESHOLD_MS] without a callback it's registered again: cheap, and it
-     * doesn't cost leaving stationary on a guess. If that fails, maintainStationary leaves.
+     * doesn't cost leaving stationary on a guess. Returns false if that fails: maintainStationary
+     * then leaves.
      */
-    private fun refreshQuietPassiveListener() {
-        val now = clock()
-        if (now - maxOf(lastLocationCallbackTime, passiveRegistrationTime) < STALE_REGISTRATION_THRESHOLD_MS) return
+    private fun refreshQuietPassiveListener(): Boolean {
+        val now = elapsedClock()
+        if (now - lastPassiveSignAt < STALE_REGISTRATION_THRESHOLD_MS) return true
         Log.i(TAG, "Stationary: no passive callback for ${STALE_REGISTRATION_THRESHOLD_MS / 60_000}min; re-registering it")
         locationProvider.removePassiveUpdates()
         isPassiveRegistered = locationProvider.requestPassiveUpdates()
-        passiveRegistrationTime = now
+        lastPassiveSignAt = now
+        return isPassiveRegistered
     }
 
     /** Every fix, from the providers' listeners and the heartbeat, for [StationaryPolicy.onFix]. */
     @VisibleForTesting
     internal fun noteFix(loc: android.location.Location) {
-        val fix =
-            StationaryPolicy.Fix(
-                lat = loc.latitude,
-                lng = loc.longitude,
-                accuracyMeters = if (loc.hasAccuracy()) loc.accuracy.toDouble() else null,
-                isGps = loc.provider == android.location.LocationManager.GPS_PROVIDER,
-                elapsedMs = loc.elapsedRealtimeNanos / 1_000_000,
-            )
-        if (stationary.onFix(fix, elapsedClock())) {
+        if (stationary.onFix(loc.toStationaryFix(), elapsedClock())) {
             diagnostic(STATIONARY_MOVED_UNTRIGGERED)
             resumeFromStationary("${loc.provider} fix moved")
         }
@@ -1315,3 +1316,13 @@ class LocationService : Service() {
         private const val NOTIFICATION_ID = 1
     }
 }
+
+/** A platform fix, as [StationaryPolicy] takes it. */
+internal fun android.location.Location.toStationaryFix() =
+    StationaryPolicy.Fix(
+        lat = latitude,
+        lng = longitude,
+        accuracyMeters = if (hasAccuracy()) accuracy.toDouble() else null,
+        isGps = provider == android.location.LocationManager.GPS_PROVIDER,
+        elapsedMs = elapsedRealtimeNanos / 1_000_000,
+    )

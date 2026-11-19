@@ -144,8 +144,6 @@ class LocationServiceStationaryTest {
         assertEquals(expected, requested == LocationAccuracy.PASSIVE, "requested $requested: $message")
     }
 
-    private fun requestCount() = requestCalls
-
     /** The trigger fires: one-shot, so it's disarmed first, as the sensor does. */
     private fun fireMotion() {
         armed = false
@@ -476,11 +474,11 @@ class LocationServiceStationaryTest {
             service.maintainStationary(inForeground = true)
             assertStationary(service, false)
             advanceUntilIdle()
-            val registrations = requestCount()
+            val registrations = requestCalls
             staleTrigger.invoke()
             advanceUntilIdle()
             assertFalse(motionLock.isHeld, "no second wake")
-            assertEquals(registrations, requestCount(), "no re-registration")
+            assertEquals(registrations, requestCalls, "no re-registration")
             assertStationary(service, false)
 
             // And the next stationary period arms afresh.
@@ -496,10 +494,10 @@ class LocationServiceStationaryTest {
             val (controller, service) = buildService()
             goStationary(service)
             fireMotion()
-            val registrations = requestCount()
+            val registrations = requestCalls
             service.maintainStationary(inForeground = true)
             service.maintainStationary(inForeground = false)
-            assertEquals(registrations, requestCount())
+            assertEquals(registrations, requestCalls)
             assertStationary(service, false)
             controller.destroy()
         }
@@ -507,27 +505,35 @@ class LocationServiceStationaryTest {
     @Test
     fun aSilentlyDroppedPassiveListenerIsReRegisteredWhileStationary() =
         runTest {
-            var wall = 1_000_000_000L
-            LocationService.clock = { wall }
             val (controller, service) = buildService()
-            goStationary(service)
-            // No passive callback since, though the trigger stays armed: an OEM dropped it.
-            wall += LocationService.STALE_REGISTRATION_THRESHOLD_MS - 1
+            // Long after the passive registration at startup: entering is itself a sign of life.
+            setElapsed(service.stationary.lastMovedAt + 2 * LocationService.STALE_REGISTRATION_THRESHOLD_MS)
+            service.enterStationaryIfIdle(elapsed())
+            assertStationary(service, true)
             service.maintainStationary(inForeground = false)
             verify(exactly = 0) { mockLocationProvider.removePassiveUpdates() }
 
-            wall += 1
+            // No passive callback since, though the trigger stays armed: an OEM dropped it.
+            setElapsed(elapsed() + LocationService.STALE_REGISTRATION_THRESHOLD_MS - 1)
+            service.maintainStationary(inForeground = false)
+            verify(exactly = 0) { mockLocationProvider.removePassiveUpdates() }
+            setElapsed(elapsed() + 1)
             service.maintainStationary(inForeground = false)
             verify(exactly = 1) { mockLocationProvider.removePassiveUpdates() }
             verify(exactly = 2) { mockLocationProvider.requestPassiveUpdates() }
             assertStationary(service, true, "re-registered; still stationary")
 
-            // Re-registering fails: active tracking resumes.
+            // Re-registering fails: active tracking resumes, and passive is retried on later
+            // registrations so stationary can come back.
             every { mockLocationProvider.requestPassiveUpdates() } returns false
-            wall += LocationService.STALE_REGISTRATION_THRESHOLD_MS
+            setElapsed(elapsed() + LocationService.STALE_REGISTRATION_THRESHOLD_MS)
             service.maintainStationary(inForeground = false)
             assertStationary(service, false)
             assertEquals(LocationAccuracy.BALANCED, requested)
+            every { mockLocationProvider.requestPassiveUpdates() } returns true
+            service.onStartCommand(null, 0, 1)
+            advanceUntilIdle()
+            assertTrue(service.isPassiveRegistered, "retried though the BALANCED registration is unchanged")
             controller.destroy()
         }
 
