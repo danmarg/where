@@ -9,6 +9,7 @@ import android.graphics.Path
 import android.graphics.RectF
 import android.location.Location
 import android.text.TextPaint
+import androidx.annotation.VisibleForTesting
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -16,6 +17,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -25,32 +27,47 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.model.UserLocation
-import org.maplibre.android.annotations.IconFactory
-import org.maplibre.android.annotations.MarkerOptions
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.location.LocationComponentActivationOptions
+import org.maplibre.android.location.LocationComponentOptions
 import org.maplibre.android.location.modes.CameraMode
 import org.maplibre.android.location.modes.RenderMode
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
+import org.maplibre.android.style.expressions.Expression
+import org.maplibre.android.style.layers.Property
+import org.maplibre.android.style.layers.PropertyFactory.iconAllowOverlap
+import org.maplibre.android.style.layers.PropertyFactory.iconAnchor
+import org.maplibre.android.style.layers.PropertyFactory.iconIgnorePlacement
+import org.maplibre.android.style.layers.PropertyFactory.iconImage
+import org.maplibre.android.style.layers.SymbolLayer
+import org.maplibre.android.style.sources.GeoJsonSource
+import org.maplibre.geojson.Feature
+import org.maplibre.geojson.FeatureCollection
+import org.maplibre.geojson.Point
 import kotlin.math.roundToInt
 
 private const val STYLE_URL = "https://tiles.openfreemap.org/styles/liberty"
+private const val PEER_SOURCE_ID = "where-peers"
+private const val PEER_LAYER_ID = "where-peers"
+private const val PEER_ID_PROPERTY = "userId"
+private const val PEER_ICON_PROPERTY = "icon"
 
 /**
  * Renders a marker bitmap with a persistent name label above a pin shape, matching the
  * GMS MarkerComposable visual. subtitle is shown below the name when the peer is selected.
- * The bitmap anchor is bottom-center (MapLibre default), which places the pin tip at the
- * geographic coordinate.
+ * The pin's tip is the bitmap's bottom-center; the peer layer anchors icons there
+ * (ICON_ANCHOR_BOTTOM), on the friend's coordinate (#482).
  */
-private fun peerMarkerIcon(
+@VisibleForTesting
+internal fun peerMarkerBitmap(
     context: Context,
     name: String,
     subtitle: String?,
     alpha: Float,
-): org.maplibre.android.annotations.Icon {
+): Bitmap {
     val dm = context.resources.displayMetrics
     val dp = dm.density
     val sp = dm.scaledDensity
@@ -126,7 +143,7 @@ private fun peerMarkerIcon(
         }
     canvas.drawPath(path, pinPaint)
 
-    return IconFactory.getInstance(context).fromBitmap(bmp)
+    return bmp
 }
 
 @Composable
@@ -167,6 +184,19 @@ fun MapComposable(
     var mapRef by remember { mutableStateOf<MapLibreMap?>(null) }
     var mapViewRef by remember { mutableStateOf<MapView?>(null) }
     var didInitialCenter by remember { mutableStateOf(false) }
+
+    // The map click listener is added once, at style load; it reads these current values.
+    val currentSelectedUserId by rememberUpdatedState(selectedUserId)
+    val currentOnSelectedUserIdChange by rememberUpdatedState(onSelectedUserIdChange)
+
+    // Each peer icon image in the style, by image id, with what it was drawn from: an image is
+    // re-uploaded only when that changes. A departed friend's image stays (one small bitmap per
+    // friend): removing it would race the asynchronous source update still drawing it.
+    val peerImageKeys = remember { mutableMapOf<String, Triple<String, String?, Float>>() }
+
+    // The features last given to the peer source, to skip re-sending an unchanged set. Not Compose
+    // state: it's written in AndroidView's update, which would then run again.
+    val lastPeers = remember { arrayOfNulls<List<Triple<String, LatLng, String>>>(1) }
     val lifecycleOwner = LocalLifecycleOwner.current
 
     DisposableEffect(lifecycleOwner) {
@@ -189,6 +219,8 @@ fun MapComposable(
             lc.activateLocationComponent(
                 LocationComponentActivationOptions.builder(context, style)
                     .useDefaultLocationEngine(false)
+                    // Under friends' pins, as on gms: a friend beside you stays visible.
+                    .locationComponentOptions(LocationComponentOptions.builder(context).layerBelow(PEER_LAYER_ID).build())
                     .build(),
             )
         }
@@ -258,13 +290,32 @@ fun MapComposable(
                             .zoom(last?.third?.toDouble() ?: 10.0)
                             .build()
                     map.uiSettings.isCompassEnabled = false
-                    map.setStyle(STYLE_URL) {
+                    map.setStyle(STYLE_URL) { style ->
+                        style.addSource(GeoJsonSource(PEER_SOURCE_ID))
+                        style.addLayer(
+                            SymbolLayer(PEER_LAYER_ID, PEER_SOURCE_ID).withProperties(
+                                iconImage(Expression.get(PEER_ICON_PROPERTY)),
+                                iconAnchor(Property.ICON_ANCHOR_BOTTOM),
+                                // Every friend is always shown; overlapping pins stack (by screen y
+                                // within a tile).
+                                iconAllowOverlap(true),
+                                iconIgnorePlacement(true),
+                            ),
+                        )
+                        // The pin drawn under the tap, topmost first. A tap on empty map (even just
+                        // beside a pin) clears the selection, and so does tapping the selected
+                        // friend again.
+                        map.addOnMapClickListener { latLng ->
+                            val pt = map.projection.toScreenLocation(latLng)
+                            val tapped =
+                                map.queryRenderedFeatures(pt, PEER_LAYER_ID)
+                                    .firstNotNullOfOrNull { it.getStringProperty(PEER_ID_PROPERTY) }
+                            currentOnSelectedUserIdChange(if (tapped == null || tapped == currentSelectedUserId) null else tapped)
+                            // Empty map: leave the tap to other listeners.
+                            tapped != null
+                        }
                         // mapRef is set here — after style load — so LaunchedEffects that
                         // read mapRef can safely call map.style without null-checking.
-                        map.addOnMapClickListener {
-                            onSelectedUserIdChange(null)
-                            false
-                        }
                         mapRef = map
                     }
                 }
@@ -274,26 +325,32 @@ fun MapComposable(
             val map = mapRef ?: return@AndroidView
             map.setPadding(0, 0, 0, bottomPaddingPx)
 
-            // Rebuild peer markers. Track Marker.id → userId so the click listener
-            // can resolve taps without relying on LatLng equality.
-            map.clear()
-            val markerIds = mutableMapOf<Long, String>()
-            markerData.forEach { (user, meta, subtitle) ->
-                val (_, name, style) = meta
-                val pinAlpha = if (style == PeerPinStyle.DIMMED) 0.45f else 1f
-                val isSelected = selectedUserId == user.userId
-                val marker =
-                    map.addMarker(
-                        MarkerOptions()
-                            .position(LatLng(user.lat, user.lng))
-                            .icon(peerMarkerIcon(context, name, if (isSelected) subtitle else null, pinAlpha)),
-                    )
-                if (marker != null) markerIds[marker.id] = user.userId
-            }
-            map.setOnMarkerClickListener { marker ->
-                val userId = markerIds[marker.id] ?: return@setOnMarkerClickListener false
-                onSelectedUserIdChange(if (selectedUserId == userId) null else userId)
-                true
+            val style = map.style ?: return@AndroidView
+            // Peers: one feature each in the peer source, its icon an image keyed by friend.
+            val peers =
+                markerData.map { (user, meta, subtitle) ->
+                    val (_, name, pinStyle) = meta
+                    val pinAlpha = if (pinStyle == PeerPinStyle.DIMMED) 0.45f else 1f
+                    val shownSubtitle = if (selectedUserId == user.userId) subtitle else null
+                    val imageId = "peer-${user.userId}"
+                    val key = Triple(name, shownSubtitle, pinAlpha)
+                    if (peerImageKeys[imageId] != key) {
+                        style.addImage(imageId, peerMarkerBitmap(context, name, shownSubtitle, pinAlpha))
+                        peerImageKeys[imageId] = key
+                    }
+                    Triple(user.userId, LatLng(user.lat, user.lng), imageId)
+                }
+            // Recomposition is frequent (own fixes, heading, pings); re-tile only on a change.
+            if (peers != lastPeers[0]) {
+                val features =
+                    peers.map { (userId, position, imageId) ->
+                        Feature.fromGeometry(Point.fromLngLat(position.longitude, position.latitude)).apply {
+                            addStringProperty(PEER_ID_PROPERTY, userId)
+                            addStringProperty(PEER_ICON_PROPERTY, imageId)
+                        }
+                    }
+                style.getSourceAs<GeoJsonSource>(PEER_SOURCE_ID)?.setGeoJson(FeatureCollection.fromFeatures(features))
+                lastPeers[0] = peers
             }
         },
         modifier = modifier,
