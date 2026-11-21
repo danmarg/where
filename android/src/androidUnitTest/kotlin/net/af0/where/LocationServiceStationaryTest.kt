@@ -535,7 +535,8 @@ class LocationServiceStationaryTest {
             assertStationary(service, false)
             assertEquals(LocationAccuracy.BALANCED, requested)
             every { mockLocationProvider.requestPassiveUpdates() } returns true
-            val attempts = 4 // startup, the refresh that worked, the one that failed, leaving's retry
+            // Startup, the refresh that worked, the one that failed; leaving doesn't retry at once.
+            val attempts = 3
             verify(exactly = attempts) { mockLocationProvider.requestPassiveUpdates() }
             service.onStartCommand(null, 0, 1)
             advanceUntilIdle()

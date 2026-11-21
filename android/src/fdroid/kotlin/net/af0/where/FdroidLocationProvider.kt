@@ -151,6 +151,13 @@ class FdroidLocationProvider : LocationProvider {
         }.maxByOrNull { it.time }
     }
 
+    // A fix from the active or passive listener (each its own LocationListener: removing one
+    // mustn't remove the other) to the service and the stationary policy.
+    private fun forward(loc: Location) {
+        onLocationCallback?.invoke(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
+        fixListener?.invoke(loc)
+    }
+
     override fun requestActiveUpdates(
         accuracy: LocationAccuracy,
         intervalMs: Long,
@@ -174,13 +181,9 @@ class FdroidLocationProvider : LocationProvider {
         // Use the same 200m distance filter as GmsLocationProvider so stationary users
         // don't receive a flood of fixes (PASSIVE is handled above and never reaches here).
         val minDistance = LocationService.MOVEMENT_RADIUS_THRESHOLD_METERS
-        val listener =
-            createLocationListener { loc ->
-                onLocationCallback?.invoke(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
-                fixListener?.invoke(loc)
-            }
+        val listener = createLocationListener(::forward)
         // Mirror GmsLocationProvider's 10s floor to prevent excessive wakeups under fast
-        // heartbeat conditions (e.g. activity transition to MOVING uses a 10s interval).
+        // heartbeat conditions (e.g. a geofence exit's HIGH, 10s interval).
         // maxDelayMs (batch delivery control) has no LocationManager equivalent; ignored per interface contract.
         val effectiveInterval = maxOf(intervalMs, 10_000L)
         return try {
@@ -204,12 +207,8 @@ class FdroidLocationProvider : LocationProvider {
             Log.w(TAG, "PASSIVE_PROVIDER not enabled; passive updates skipped")
             return false
         }
-        val listener =
-            createLocationListener { loc ->
-                onLocationCallback?.invoke(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
-                // Another app's GPS (navigation, say) is the best sign of a move the sensor missed.
-                fixListener?.invoke(loc)
-            }
+        // Another app's GPS (navigation, say) is the best sign of a move the sensor missed.
+        val listener = createLocationListener(::forward)
         return try {
             locationManager.requestLocationUpdates(LocationManager.PASSIVE_PROVIDER, 1_000L, 0f, listener, callbackLooper)
             passiveListener = listener

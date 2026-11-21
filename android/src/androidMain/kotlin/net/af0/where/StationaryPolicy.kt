@@ -1,11 +1,6 @@
 package net.af0.where
 
 import kotlin.math.abs
-import kotlin.math.asin
-import kotlin.math.cos
-import kotlin.math.min
-import kotlin.math.sin
-import kotlin.math.sqrt
 
 /**
  * When the F-Droid build turns its active location request off (#483). The fdroid flavor has no
@@ -138,8 +133,9 @@ class StationaryPolicy(
         val accurateEnough = (fix.accuracyMeters ?: Double.MAX_VALUE) <= fallbackAnchorMaxAccuracyMeters
         // Fixes can arrive out of order (another app's, through the passive listener): keep the newest.
         if (fresh && accurateEnough && fix.elapsedMs > (latestFix?.elapsedMs ?: Long.MIN_VALUE)) latestFix = fix
-        if (!isCredible(fix, now)) return false
-        val accuracy = fix.accuracyMeters ?: return false
+        // Credible evidence only: a fresh GPS fix, accurate enough.
+        if (!fix.isGps || !fresh) return false
+        val accuracy = fix.accuracyMeters?.takeIf { it <= credibleAccuracyMeters } ?: return false
         val last = anchor
         if (last == null) {
             // Seeding the anchor isn't a move: the first fix after any registration always arrives.
@@ -147,7 +143,7 @@ class StationaryPolicy(
             return false
         }
         val lastAccuracy = last.accuracyMeters ?: 0.0
-        val distance = distanceMeters(last, fix)
+        val distance = distanceMeters(last.lat, last.lng, fix.lat, fix.lng)
         val pending = unconfirmedMove
         if (distance < moveRadiusMeters + lastAccuracy + accuracy) {
             // Back at the place cancels a candidate move, but only if taken after it: an older
@@ -191,23 +187,5 @@ class StationaryPolicy(
         now: Long,
     ) {
         if (timeoutMs == longFixTimeoutMs && (gotFix || tookMs >= fixTimeoutMs)) lastLongFixAt = now
-    }
-
-    private fun isCredible(
-        fix: Fix,
-        now: Long,
-    ): Boolean =
-        fix.isGps && fix.accuracyMeters != null && fix.accuracyMeters <= credibleAccuracyMeters &&
-            now - fix.elapsedMs <= credibleMaxAgeMs
-
-    private fun distanceMeters(
-        a: Fix,
-        b: Fix,
-    ): Double {
-        val r = 6_371_000.0
-        val dLat = Math.toRadians(b.lat - a.lat)
-        val dLng = Math.toRadians(b.lng - a.lng)
-        val h = sin(dLat / 2).let { it * it } + cos(Math.toRadians(a.lat)) * cos(Math.toRadians(b.lat)) * sin(dLng / 2).let { it * it }
-        return 2 * r * asin(min(1.0, sqrt(h)))
     }
 }

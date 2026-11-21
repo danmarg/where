@@ -144,9 +144,17 @@ class LocationService : Service() {
         get() = if (stationary.mode == StationaryPolicy.Mode.STATIONARY) LocationAccuracy.PASSIVE else currentPriority
 
     // What the current active registration was made with; ensureLocationRegistration re-registers
-    // when they differ from what's wanted.
+    // when they differ from what's wanted. See invalidateRegistration.
     private var registeredPriority: LocationAccuracy? = null
     private var registeredInterval = 0L
+
+    /**
+     * The next [ensureLocationRegistration] re-requests the active registration even if nothing
+     * changed. Unlike clearing [isRegistered], an off branch still removes the live listener.
+     */
+    private fun invalidateRegistration() {
+        registeredPriority = null
+    }
 
     /** [elapsedClock] time of the last geofence exit; see [endHighAccuracyIfIdle]. */
     @VisibleForTesting
@@ -180,9 +188,9 @@ class LocationService : Service() {
     // successful passive registration. See refreshQuietPassiveListener.
     private var lastPassiveSignAt: Long = 0L
 
-    // [elapsedClock] time of the last passive registration attempt after one failed; see
-    // updateRegistrations.
-    private var lastPassiveRetryAt: Long? = null
+    // [elapsedClock] time before which a failed passive registration isn't retried; see
+    // registerPassive.
+    private var nextPassiveRetryAt = 0L
 
     private val pendingFriendSends = Channel<String>(Channel.UNLIMITED)
 
@@ -366,8 +374,7 @@ class LocationService : Service() {
                     Log.d(TAG, "Location providers changed, refreshing registration and notification")
                     // Re-request even at the same priority: fdroid picks GPS or NETWORK at
                     // registration, so a listener left on NETWORK while GPS was off moves back.
-                    // Not isRegistered = false: a provider turned off must still remove it.
-                    registeredPriority = null
+                    invalidateRegistration()
                     ensureLocationRegistration()
                     updateNotification()
                 }
@@ -492,7 +499,7 @@ class LocationService : Service() {
             lastGeofenceExitAt = elapsedClock()
             // A departure: stationary (if this provider had both) mustn't keep it PASSIVE.
             stationary.leave(elapsedClock())
-            isRegistered = false
+            invalidateRegistration()
             ensureLocationRegistration()
             logReliability(WakeSource.GEOFENCE, true)
             // Use the triggering location from the geofence event to replant the fence,
@@ -683,20 +690,8 @@ class LocationService : Service() {
         }
 
         // Before the early return: a passive registration that failed is retried, or a BALANCED
-        // listener could stay on for good (stationary needs passive to enter). At most once a
-        // minute: this runs on every poll iteration, and a disabled provider refuses every time.
-        val now = elapsedClock()
-        val retryDue = lastPassiveRetryAt.let { it == null || now - it >= PASSIVE_RETRY_INTERVAL_MS }
-        if (!isPassiveRegistered && retryDue) {
-            isPassiveRegistered = locationProvider.requestPassiveUpdates()
-            if (isPassiveRegistered) {
-                lastPassiveSignAt = now
-                lastPassiveRetryAt = null
-                Log.i(TAG, "Passive location updates registered.")
-            } else {
-                lastPassiveRetryAt = now
-            }
-        }
+        // listener could stay on for good (stationary needs passive to enter).
+        if (!isPassiveRegistered) registerPassive()
 
         val priority = effectivePriority
         if (isRegistered && registeredPriority == priority && registeredInterval == currentInterval) return
@@ -840,7 +835,7 @@ class LocationService : Service() {
                 if (referenceTime > 0L && now - referenceTime > STALE_REGISTRATION_THRESHOLD_MS) {
                     Log.w(TAG, "FLP callbacks stale for ${(now - referenceTime) / 60000}min; re-registering")
                     e2eeManager.addDiagnosticEvent("FLP stale; re-registering")
-                    isRegistered = false
+                    invalidateRegistration()
                     lastLocationCallbackTime = 0L
                     ensureLocationRegistration()
                 }
@@ -864,9 +859,7 @@ class LocationService : Service() {
                 // A long stationary fix: renew the wake lock so the poll and send after it stay
                 // covered (WAKE_LOCK_TIMEOUT_MS was sized for the short one).
                 if (fixTimeoutMs > LocationProvider.DEFAULT_FIX_TIMEOUT_MS && pollWakeLock.isHeld) {
-                    pollWakeLock.acquire(
-                        WAKE_LOCK_TIMEOUT_MS,
-                    )
+                    pollWakeLock.acquire(WAKE_LOCK_TIMEOUT_MS)
                 }
                 val fixStartedAt = elapsedClock()
                 val forced = forceFix(fixTimeoutMs)
@@ -1082,8 +1075,25 @@ class LocationService : Service() {
         if (quietMs < STALE_REGISTRATION_THRESHOLD_MS) return true
         Log.i(TAG, "Stationary: no passive callback or registration for ${quietMs / 60_000}min; re-registering it")
         locationProvider.removePassiveUpdates()
+        isPassiveRegistered = false
+        return registerPassive()
+    }
+
+    /**
+     * Requests the passive registration, unless one failed within [PASSIVE_RETRY_INTERVAL_MS]: this
+     * is reached on every reconcile (poll wakes, collectors, the watchdog), and a disabled provider
+     * refuses every time. Returns whether it's registered.
+     */
+    private fun registerPassive(): Boolean {
+        val now = elapsedClock()
+        if (now < nextPassiveRetryAt) return false
         isPassiveRegistered = locationProvider.requestPassiveUpdates()
-        if (isPassiveRegistered) lastPassiveSignAt = now
+        if (isPassiveRegistered) {
+            lastPassiveSignAt = now
+            Log.i(TAG, "Passive location updates registered.")
+        } else {
+            nextPassiveRetryAt = now + PASSIVE_RETRY_INTERVAL_MS
+        }
         return isPassiveRegistered
     }
 
@@ -1168,8 +1178,10 @@ class LocationService : Service() {
     }
 
     @VisibleForTesting
-    internal suspend fun forceLocationUpdateAndGet(timeoutMs: Long = LocationProvider.DEFAULT_FIX_TIMEOUT_MS): android.location.Location? =
-        forceFix(timeoutMs).location
+    internal suspend fun forceLocationUpdateAndGet(): android.location.Location? =
+        forceFix(
+            LocationProvider.DEFAULT_FIX_TIMEOUT_MS,
+        ).location
 
     /**
      * A forced fix, falling back to the last known location when it times out or returns null.

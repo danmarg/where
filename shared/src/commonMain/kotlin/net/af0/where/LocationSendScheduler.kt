@@ -15,12 +15,6 @@ import kotlinx.coroutines.selects.onTimeout
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withTimeoutOrNull
 import net.af0.where.e2ee.LocationClient
-import kotlin.math.PI
-import kotlin.math.asin
-import kotlin.math.cos
-import kotlin.math.min
-import kotlin.math.sin
-import kotlin.math.sqrt
 
 /** When broadcast location sends happen. One policy for both platforms. */
 data class SendPolicy(
@@ -343,7 +337,7 @@ class LocationSendScheduler(
         val changed =
             sent == null ||
                 sent.stationary != gate.stationary() ||
-                distanceMeters(sent.fix, fix) >= policy.minDistanceMeters
+                distanceMeters(sent.fix.lat, sent.fix.lng, fix.lat, fix.lng) >= policy.minDistanceMeters
         return if (heartbeatArmed || changed) gateOpens - now else null
     }
 
@@ -393,21 +387,6 @@ class LocationSendScheduler(
         if (epoch != sessionEpoch) return
         backoffUntil = lastAttempt + policy.heartbeatMs
         settle(reason, false, sinceLastSuccess, lastError)
-    }
-
-    private fun distanceMeters(
-        a: Fix,
-        b: Fix,
-    ): Double {
-        val toRad = PI / 180
-        val dLat = (b.lat - a.lat) * toRad
-        val dLng = (b.lng - a.lng) * toRad
-        val h = sin(dLat / 2) * sin(dLat / 2) + cos(a.lat * toRad) * cos(b.lat * toRad) * sin(dLng / 2) * sin(dLng / 2)
-        return 2 * EARTH_RADIUS_METERS * asin(min(1.0, sqrt(h)))
-    }
-
-    private companion object {
-        const val EARTH_RADIUS_METERS = 6_371_000.0
     }
 }
 
