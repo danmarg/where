@@ -1,4 +1,3 @@
-• Themed icon support on Android 13 and later.
-• You can now see friends who share with you without granting location permission; permission is only needed to share your own location.
-• Fixed location being sent far more often than needed on some devices, which used extra battery and data.
-• Translation fixes, reliability and security hardening.
+• Uses much less battery when you stay in one place: GPS turns off after 15 minutes without moving and comes back when the phone senses motion.
+• Friend pins on the map now point exactly at their location.
+• Reliability improvements.
