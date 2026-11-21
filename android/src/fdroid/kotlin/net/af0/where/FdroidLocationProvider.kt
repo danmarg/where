@@ -1,6 +1,10 @@
 package net.af0.where
 
 import android.content.Context
+import android.hardware.Sensor
+import android.hardware.SensorManager
+import android.hardware.TriggerEvent
+import android.hardware.TriggerEventListener
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -11,20 +15,30 @@ import android.os.Looper
 import android.util.Log
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
-import java.util.concurrent.Executors
 import kotlin.coroutines.resume
 
 private const val TAG = "FdroidLocationProvider"
+
+// LocationManager.getCurrentLocation gives up after this long, whatever the caller's timeout.
+private const val PLATFORM_CURRENT_LOCATION_MAX_MS = 30_000L
 
 class FdroidLocationProvider : LocationProvider {
     private lateinit var locationManager: LocationManager
     private var activeListener: LocationListener? = null
     private var passiveListener: LocationListener? = null
     private var onLocationCallback: ((Double, Double, Double?) -> Unit)? = null
+    private var fixListener: ((Location) -> Unit)? = null
 
     // Captured at init() time — callers must invoke init() on the thread whose looper
     // should receive location callbacks (LocationService calls init() on the main thread).
     private lateinit var callbackLooper: Looper
+
+    private var sensorManager: SensorManager? = null
+    private var motionSensor: Sensor? = null
+
+    // The armed significant-motion listener; touched only on the main thread (init, the
+    // service's calls, and trigger delivery all run there).
+    private var motionListener: TriggerEventListener? = null
 
     override fun init(
         context: Context,
@@ -33,6 +47,53 @@ class FdroidLocationProvider : LocationProvider {
         this.onLocationCallback = onLocation
         callbackLooper = Looper.myLooper() ?: Looper.getMainLooper()
         locationManager = context.applicationContext.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        sensorManager = context.applicationContext.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+        motionSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_SIGNIFICANT_MOTION)
+    }
+
+    override fun setFixListener(listener: ((Location) -> Unit)?) {
+        fixListener = listener
+    }
+
+    // TYPE_SIGNIFICANT_MOTION is a wake-up sensor in the sensor hub: it fires when the device
+    // starts walking, cycling or riding, with no location provider or network backend involved,
+    // so it works the same on microG, GrapheneOS and plain AOSP. One-shot: it disarms itself
+    // after firing. Some low-end devices lack it; then this returns false. SensorManager delivers
+    // trigger events on the main looper, inside the sensor service's wake lock.
+    // Refused while the active listener would be on NETWORK (no GPS): that listener is cheap, and its
+    // fixes are too coarse for LocationService to tell movement from noise.
+    // Arms once: re-requesting would tear down the sensor connection, and could drop an event
+    // already queued or restart the HAL's detection window mid-departure.
+    override fun armMotionTrigger(onMotion: () -> Unit): Boolean {
+        val sm = sensorManager ?: return false
+        val sensor = motionSensor ?: return false
+        if (selectFallbackProvider() != LocationManager.GPS_PROVIDER) {
+            cancelMotionTrigger()
+            return false
+        }
+        if (motionListener != null) return true
+        val listener =
+            object : TriggerEventListener() {
+                override fun onTrigger(event: TriggerEvent?) {
+                    if (motionListener !== this) return
+                    motionListener = null
+                    onMotion()
+                }
+            }
+        if (!sm.requestTriggerSensor(listener, sensor)) {
+            // Debug: LocationService asks again on every poll wake.
+            Log.d(TAG, "Significant-motion sensor refused the trigger request")
+            return false
+        }
+        motionListener = listener
+        return true
+    }
+
+    override fun cancelMotionTrigger() {
+        val listener = motionListener ?: return
+        motionListener = null
+        val sensor = motionSensor ?: return
+        sensorManager?.cancelTriggerSensor(listener, sensor)
     }
 
     override fun getLastLocationAsync(callback: (Location?) -> Unit) {
@@ -90,6 +151,13 @@ class FdroidLocationProvider : LocationProvider {
         }.maxByOrNull { it.time }
     }
 
+    // A fix from the active or passive listener (each its own LocationListener: removing one
+    // mustn't remove the other) to the service and the stationary policy.
+    private fun forward(loc: Location) {
+        onLocationCallback?.invoke(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
+        fixListener?.invoke(loc)
+    }
+
     override fun requestActiveUpdates(
         accuracy: LocationAccuracy,
         intervalMs: Long,
@@ -113,12 +181,9 @@ class FdroidLocationProvider : LocationProvider {
         // Use the same 200m distance filter as GmsLocationProvider so stationary users
         // don't receive a flood of fixes (PASSIVE is handled above and never reaches here).
         val minDistance = LocationService.MOVEMENT_RADIUS_THRESHOLD_METERS
-        val listener =
-            createLocationListener { loc ->
-                onLocationCallback?.invoke(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
-            }
+        val listener = createLocationListener(::forward)
         // Mirror GmsLocationProvider's 10s floor to prevent excessive wakeups under fast
-        // heartbeat conditions (e.g. activity transition to MOVING uses a 10s interval).
+        // heartbeat conditions (e.g. a geofence exit's HIGH, 10s interval).
         // maxDelayMs (batch delivery control) has no LocationManager equivalent; ignored per interface contract.
         val effectiveInterval = maxOf(intervalMs, 10_000L)
         return try {
@@ -142,10 +207,8 @@ class FdroidLocationProvider : LocationProvider {
             Log.w(TAG, "PASSIVE_PROVIDER not enabled; passive updates skipped")
             return false
         }
-        val listener =
-            createLocationListener { loc ->
-                onLocationCallback?.invoke(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
-            }
+        // Another app's GPS (navigation, say) is the best sign of a move the sensor missed.
+        val listener = createLocationListener(::forward)
         return try {
             locationManager.requestLocationUpdates(LocationManager.PASSIVE_PROVIDER, 1_000L, 0f, listener, callbackLooper)
             passiveListener = listener
@@ -179,26 +242,38 @@ class FdroidLocationProvider : LocationProvider {
         }
     }
 
-    override suspend fun getCurrentLocation(): Location? {
-        return withTimeoutOrNull(10_000L) {
+    override suspend fun getCurrentLocation(timeoutMs: Long): Location? {
+        return withTimeoutOrNull(timeoutMs) {
             suspendCancellableCoroutine { cont ->
                 try {
-                    // R == API 30; LocationManager.getCurrentLocation() was added in API 30.
-                    // The else branch returns the best last-known fix, which may be stale.
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                        val provider = selectFallbackProvider()
-                        if (provider == null) {
-                            Log.w(TAG, "No enabled location provider (GPS or NETWORK) available; falling back to last-known fix")
-                            cont.resume(getBestLastKnownLocation())
-                        } else {
-                            val signal = CancellationSignal()
-                            cont.invokeOnCancellation { signal.cancel() }
-                            locationManager.getCurrentLocation(provider, signal, Executors.newSingleThreadExecutor()) { loc ->
-                                cont.resume(loc)
-                            }
+                    val provider = selectFallbackProvider()
+                    if (provider == null) {
+                        Log.w(TAG, "No enabled location provider (GPS or NETWORK) available; falling back to last-known fix")
+                        cont.resume(getBestLastKnownLocation())
+                    } else if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R && activeListener != null) {
+                        // Below API 30 with the active listener running, last-known is its latest
+                        // fix: fresh enough, without holding the caller for a fix.
+                        cont.resume(getBestLastKnownLocation())
+                    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && timeoutMs <= PLATFORM_CURRENT_LOCATION_MAX_MS) {
+                        // R == API 30; LocationManager.getCurrentLocation() was added in API 30.
+                        // The callback only resumes the continuation: run it on the binder thread.
+                        val signal = CancellationSignal()
+                        cont.invokeOnCancellation { signal.cancel() }
+                        locationManager.getCurrentLocation(provider, signal, Runnable::run) { loc ->
+                            cont.resume(loc)
                         }
                     } else {
-                        cont.resume(getBestLastKnownLocation())
+                        // A listener until the first fix: below API 30 while stationary (last-known
+                        // is stale there), and for a timeout past getCurrentLocation's platform cap
+                        // (a stationary long fix, giving a cold receiver time for ephemeris).
+                        lateinit var listener: LocationListener
+                        listener =
+                            createLocationListener { loc ->
+                                locationManager.removeUpdates(listener)
+                                if (cont.isActive) cont.resume(loc)
+                            }
+                        cont.invokeOnCancellation { locationManager.removeUpdates(listener) }
+                        locationManager.requestLocationUpdates(provider, 0L, 0f, listener, callbackLooper)
                     }
                 } catch (e: SecurityException) {
                     Log.e(TAG, "SecurityException getting current location: ${e.message}")
@@ -231,5 +306,6 @@ class FdroidLocationProvider : LocationProvider {
     override fun onDestroy() {
         removeActiveUpdates()
         removePassiveUpdates()
+        cancelMotionTrigger()
     }
 }

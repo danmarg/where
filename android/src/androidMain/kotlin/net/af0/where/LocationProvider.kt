@@ -45,7 +45,8 @@ interface LocationProvider {
 
     fun removePassiveUpdates()
 
-    suspend fun getCurrentLocation(): Location?
+    /** A fresh fix, or null if none comes within [timeoutMs]. */
+    suspend fun getCurrentLocation(timeoutMs: Long = DEFAULT_FIX_TIMEOUT_MS): Location?
 
     suspend fun getLastLocation(): Location?
 
@@ -71,7 +72,30 @@ interface LocationProvider {
      */
     fun removeGeofence() {}
 
+    /**
+     * Receives every fix from the active and passive listeners, with its provider, accuracy and
+     * time, on the main thread, for movement detection ([StationaryPolicy] filters them). Only the
+     * F-Droid build reports them; the gms build has no stationary mode.
+     */
+    fun setFixListener(listener: ((Location) -> Unit)?) {}
+
+    /**
+     * Arms a one-shot wake for when the device starts moving: the significant-motion sensor in
+     * the F-Droid build (the gms build wakes on a geofence exit instead). [onMotion] runs at most
+     * once per arm, on the main thread. True, without re-arming, when one is already armed. False
+     * when this build or device has no such trigger, and then any armed one is disarmed.
+     */
+    fun armMotionTrigger(onMotion: () -> Unit): Boolean = false
+
+    /** Disarms the [armMotionTrigger] trigger, if one is armed. */
+    fun cancelMotionTrigger() {}
+
     fun onDestroy()
+
+    companion object {
+        /** A forced fix's usual timeout; see [StationaryPolicy.longFixTimeoutMs] for the exception. */
+        const val DEFAULT_FIX_TIMEOUT_MS = 10_000L
+    }
 }
 
 /**
