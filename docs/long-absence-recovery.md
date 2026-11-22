@@ -169,8 +169,11 @@ Each step is a commit and leaves the build green.
 (2026-11-22), uncommitted. Done: steps 3-6, and step 2's `LongAbsenceTest` (`shared/jvmTest`:
 10/89-day absences sharing and not, the 7-day-TTL failure, past retention, both away, a failed
 first poll, the backlog drained over several polls with a fresh location checked, one parting
-keepalive). Not done: the late-outbox and return-order cases, and the TTL fault in
-`ExhaustiveScheduleTest`. The label is text only (the existing Remove action is the way out).
+keepalive, both away returning in either order, a transition frame delivered late from the
+outbox). The TTL fault isn't added to `ExhaustiveScheduleTest`: that drives `ProtocolCore`
+only, where nothing expires within retention and expiry past it is the seq-1 loss it already
+excludes; the long-absence behaviour lives in `LocationClient` and `LongAbsenceTest` covers it.
+The label is text only (the existing Remove action is the way out).
 
 Recovery within retention is conditional on each side's polls fetching and processing the
 other's frames before they expire. A backlog over `MAX_MESSAGES_PER_POLL` just takes more polls;
