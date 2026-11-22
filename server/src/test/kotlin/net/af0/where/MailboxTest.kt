@@ -7,9 +7,11 @@ import io.ktor.http.*
 import io.ktor.server.testing.*
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
-import net.af0.where.e2ee.MailboxPayload
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import net.af0.where.e2ee.MailboxPayload
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -27,14 +29,17 @@ class MailboxTest {
     @OptIn(ExperimentalSerializationApi::class)
     @Test
     fun `every MailboxPayload type is classified for retention`() {
-        val sealed = MailboxPayload.serializer().descriptor
-        val subclasses = sealed.getElementDescriptor(1)
+        // The intended retention of each type. A new type fails here until it is added, and the
+        // assertion below checks messageTtlMs actually gives it that TTL.
+        val expected = mapOf("EncryptedMessage" to MAILBOX_TTL_MS, "KeyExchangeInit" to SHORT_MESSAGE_TTL_MS)
+        val subclasses = MailboxPayload.serializer().descriptor.getElementDescriptor(1)
         val names = (0 until subclasses.elementsCount).map { subclasses.getElementName(it) }.toSet()
-        assertEquals(
-            setOf("EncryptedMessage", "KeyExchangeInit"),
-            names,
-            "MailboxPayload types changed: classify the new type in Server.kt's messageTtlMs, then update this set",
-        )
+        assertEquals(expected.keys, names, "MailboxPayload types changed: decide each new type's retention in messageTtlMs")
+        for ((type, ttl) in expected) {
+            assertEquals(ttl, messageTtlMs(buildJsonObject { put("type", type) }), "TTL for $type")
+        }
+        // A non-string "type" is not a session frame.
+        assertEquals(SHORT_MESSAGE_TTL_MS, messageTtlMs(buildJsonObject { put("type", JsonPrimitive(1)) }))
     }
 
     // ---------------------------------------------------------------------------

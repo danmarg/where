@@ -89,7 +89,7 @@ private const val MAX_BODY_BYTES = 4 * 1024
 private const val POLL_BASELINE_LATENCY_MS = 50L
 
 /** How long an unread message is kept: long enough for a device to be away that long (§10.2). */
-private const val MAILBOX_TTL_MS = MAILBOX_RETENTION_SECONDS * 1000L
+internal const val MAILBOX_TTL_MS = MAILBOX_RETENTION_SECONDS * 1000L
 
 /**
  * How long a message's dedup record is kept: only long enough for retries, since these records
@@ -102,14 +102,14 @@ private const val RECEIVED_IDS_TTL_MS = 7 * 24 * 60 * 60 * 1000L
  * while its invite is valid (48 h), so there's no reason to hold a scanner's key and name for
  * [MAILBOX_TTL_MS]; any other type (or junk) gets no more than that either.
  */
-private const val SHORT_MESSAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000L
+internal const val SHORT_MESSAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000L
 
 /** The wire `type` of a session frame, the only payload kept for [MAILBOX_TTL_MS]. */
-private val SESSION_FRAME_TYPE = EncryptedMessagePayload.serializer().descriptor.serialName
+internal val SESSION_FRAME_TYPE = EncryptedMessagePayload.serializer().descriptor.serialName
 
 /** The TTL for [payload]: a session frame is kept for the retention, anything else shorter. */
-private fun messageTtlMs(payload: JsonElement): Long {
-    val type = ((payload as? JsonObject)?.get("type") as? JsonPrimitive)?.content
+internal fun messageTtlMs(payload: JsonElement): Long {
+    val type = ((payload as? JsonObject)?.get("type") as? JsonPrimitive)?.takeIf { it.isString }?.content
     return if (type == SESSION_FRAME_TYPE) MAILBOX_TTL_MS else SHORT_MESSAGE_TTL_MS
 }
 
@@ -423,7 +423,7 @@ fun createDynamoDbClient(
  */
 internal object CompactPayload {
     private val KEYS = listOf("type", "v", "envelope", "ct", "msgId")
-    private const val TYPE = "EncryptedMessage"
+    private val TYPE = SESSION_FRAME_TYPE
     private val UNSIGNED_INT = Regex("0|[1-9][0-9]*")
     private val ATTRIBUTES = setOf("v", "e", "c")
 
