@@ -843,6 +843,8 @@ class DynamoMailboxState(
         if (!limiter.checkGet(token)) return null
         val now = clock() / 1000
         val messages = mutableListOf<JsonElement>()
+        var badCompact = 0
+        var badPayload = 0
         var lastKey: Map<String, AttributeValue>? = null
         do {
             val response =
@@ -865,14 +867,15 @@ class DynamoMailboxState(
                         .build(),
                 )
             for (item in response.items()) {
+                val compact = CompactPayload.isCompact(item)
                 val message =
-                    if (CompactPayload.isCompact(item)) {
+                    if (compact) {
                         CompactPayload.decode(item)
                     } else {
                         item["payload"]?.s()?.let { runCatching { json.parseToJsonElement(it) }.getOrNull() }
                     }
                 if (message == null) {
-                    auditLog.warn("Skipping malformed mailbox item (msgId={})", item["msgId"]?.s())
+                    if (compact) badCompact++ else badPayload++
                 } else if (messages.size < MAX_MESSAGES_PER_POLL) {
                     messages.add(message)
                 }
@@ -880,6 +883,15 @@ class DynamoMailboxState(
             lastKey = response.lastEvaluatedKey().takeIf { it.isNotEmpty() }
         } while (lastKey != null && messages.size < MAX_MESSAGES_PER_POLL)
 
+        // One line per poll, counts only: never the token or a msgId (stable identifiers; see redactPath).
+        if (badCompact + badPayload > 0) {
+            auditLog.warn(
+                "Skipped {} malformed mailbox items (compact={}, payload={})",
+                badCompact + badPayload,
+                badCompact,
+                badPayload,
+            )
+        }
         return messages
     }
 

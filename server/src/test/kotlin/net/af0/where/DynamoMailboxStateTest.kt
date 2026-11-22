@@ -1,5 +1,8 @@
 package net.af0.where
 
+import ch.qos.logback.classic.Logger
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import io.ktor.client.request.get
 import io.ktor.client.request.put
 import io.ktor.client.request.setBody
@@ -20,6 +23,7 @@ import net.af0.where.e2ee.MessagePlaintext
 import net.af0.where.e2ee.ReceivedMessage
 import net.af0.where.e2ee.Session
 import net.af0.where.e2ee.toHex
+import org.slf4j.LoggerFactory
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.wait.strategy.Wait
 import org.testcontainers.utility.DockerImageName
@@ -1110,7 +1114,29 @@ class DynamoMailboxStateTest {
         }
         Thread.sleep(10)
         assertTrue(state.post(token, RealMessages.wire(second), second.msgId))
-        assertEquals(listOf(RealMessages.wire(first), RealMessages.wire(second)), state.drain(token))
+        val logs = captureLogs { assertEquals(listOf(RealMessages.wire(first), RealMessages.wire(second)), state.drain(token)) }
+        // One summary line per poll, and the redaction policy holds: no token, no msgId.
+        assertEquals(
+            listOf("Skipped 4 malformed mailbox items (compact=2, payload=2)"),
+            logs.filter { it.first == "Server" }.map { it.second },
+        )
+        logs.map { it.second }.forEach { line ->
+            assertFalse(line.contains(token), "log line leaked token: $line")
+            assertFalse(line.contains("bad-"), "log line leaked msgId: $line")
+        }
+    }
+
+    /** (logger name, message) for everything the root logger receives while [block] runs. */
+    private fun captureLogs(block: () -> Unit): List<Pair<String, String>> {
+        val root = LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME) as Logger
+        val appender = ListAppender<ILoggingEvent>().apply { start() }
+        root.addAppender(appender)
+        try {
+            block()
+        } finally {
+            root.detachAppender(appender)
+        }
+        return appender.list.map { it.loggerName to it.formattedMessage }
     }
 
     @Test
