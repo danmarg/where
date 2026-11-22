@@ -415,36 +415,27 @@ sharing_notification_shown() {
   adb shell dumpsys notification --noredact | tr -d '\r' | grep -A2 "NotificationRecord(.*pkg=$PKG " |
     grep -q "channel=where_location"
 }
-# run_worker: runs the app's WorkManager jobs now, past their schedule and constraints.
-run_worker() {
-  local id ids
-  ids=$(adb shell dumpsys jobscheduler | tr -d '\r' |
-    sed -nE "s|.*JOB #[^/]+/([0-9]+): [0-9a-f]+ $PKG/androidx\.work\..*|\1|p" | sort -u)
-  [ -n "$ids" ] || fail "no WorkManager job scheduled for $PKG"
-  for id in $ids; do
-    adb shell cmd jobscheduler run -f "$PKG" "$id" >/dev/null
-  done
-}
 last_recv() { app_query "SELECT max(lastRecvTs) FROM Friends"; }
 recv_after() { [ "$(last_recv)" -gt "$1" ]; }
 retry 30 service_running || fail "LocationService isn't running while the app is visible"
 adb shell input keyevent KEYCODE_HOME
 retry 120 service_stopped || fail "LocationService still runs 2 min after leaving the app while paused"
 ! sharing_notification_shown || fail "the sharing notification is still shown while paused in the background"
-RECV_BEFORE=$(last_recv)
-sleep 2 # lastRecvTs is in seconds
-cli alice keepalive >/dev/null
-# The worker polls at most every ~25 min; clear its last-poll time so this run polls. Kill the
-# process first so it doesn't keep the old value in memory, and rewrite the file in place
-# (cat >) so it keeps the app's ownership.
-P=$(app_pid)
-[ -z "$P" ] || adb shell su 0 kill -9 "$P"
-adb shell su 0 sh -c "'f=/data/data/$PKG/shared_prefs/where_prefs.xml; grep -v worker_last_poll_ms \$f > /data/local/tmp/wp.xml && cat /data/local/tmp/wp.xml > \$f; rm -f /data/local/tmp/wp.xml'"
-run_worker
-retry 60 recv_after "$RECV_BEFORE" || fail "the worker didn't receive the friend's keepalive while paused in the background"
-service_stopped || fail "the worker started LocationService while paused"
-! sharing_notification_shown || fail "the worker brought the sharing notification back"
-echo "✓ Paused in the background: no service or notification, and the worker keeps the session going"
+# The worker's next periodic run (every 15 min; WorkManager won't run a periodic job early, even
+# when forced through jobscheduler) must receive a friend's keepalive. Its ~25-min throttle doesn't
+# hold this run off: it only counts the worker's own polls, and until now we were sharing. Up to
+# 15 min, so only in full runs, as Doze and reboot.
+if [ -n "$E2E_QUICK" ]; then
+  echo "✓ Paused in the background: no service or notification (worker poll skipped: E2E_QUICK)"
+else
+  RECV_BEFORE=$(last_recv)
+  sleep 2 # lastRecvTs is in seconds
+  cli alice keepalive >/dev/null
+  retry 1200 recv_after "$RECV_BEFORE" || fail "the worker didn't receive a friend's keepalive within 20 min while paused in the background"
+  service_stopped || fail "the worker started LocationService while paused"
+  ! sharing_notification_shown || fail "the worker brought the sharing notification back"
+  echo "✓ Paused in the background: no service or notification, and the worker keeps the session going"
+fi
 
 log "Backup is refused"
 ! adb shell dumpsys package "$PKG" | grep -E "^ +pkgFlags=" | grep -q ALLOW_BACKUP ||
