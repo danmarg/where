@@ -400,4 +400,71 @@ class UnresponsiveFriendThrottleTest {
             aliceClient.sendLocation(1.0, 1.0, pausedFriendIds = aliceManager.listFriends().map { it.id }.toSet())
             assertTrue(aliceManager.diagnosticLog.value.none { it.contains("throttled as unresponsive") })
         }
+
+    @Test
+    fun `turning sharing back on reaches an unresponsive friend right after the stop`() =
+        runTest {
+            val mailbox = MemoryMailboxClient()
+            setVirtualTime(1_700_000_000_000L)
+            val (_, aliceClient, bobClient) = quietBob(mailbox)
+            aliceClient.sendStoppedSharing() // sharing off...
+            advanceTimeBy(5_000L)
+            aliceClient.sendLocation(2.0, 2.0, emptySet()) // ...and on again: the forced send.
+            val delivered = bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            assertEquals(listOf(2.0), delivered.map { it.lat }, "the resume must follow the stop, not wait out the throttle")
+
+            // Once resumed, the throttle applies again.
+            advanceTimeBy(5_000L)
+            aliceClient.sendLocation(3.0, 3.0, emptySet())
+            assertTrue(bobClient.poll(isForeground = true, pausedFriendIds = emptySet()).isEmpty())
+        }
+
+    // Alice's manager and client, Bob's client; Bob has been quiet for 10 min since each side got
+    // the other's first Location.
+    private suspend fun TestScope.quietBob(mailbox: MailboxClient): Triple<E2eeManager, LocationClient, LocationClient> {
+        val aliceManager = testE2eeManager(createTestSqlDriver())
+        val aliceClient = LocationClient("http://localhost", aliceManager, mailbox)
+        val bobClient = pairNewFriend(aliceManager, aliceClient, mailbox, "Bob")
+        bobClient.sendLocation(0.0, 0.0, emptySet())
+        aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
+        aliceClient.sendLocation(1.0, 1.0, emptySet())
+        bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
+        advanceTimeBy(600_000L)
+        return Triple(aliceManager, aliceClient, bobClient)
+    }
+
+    @Test
+    fun `a resume that fails behind a stuck stop still skips the throttle once the stop is delivered`() =
+        runTest {
+            val mailbox = ChaosMailboxClient(MemoryMailboxClient())
+            setVirtualTime(1_700_000_000_000L)
+            val (_, aliceClient, bobClient) = quietBob(mailbox)
+
+            mailbox.failNextPost = true
+            aliceClient.sendStoppedSharing() // queued, not delivered
+            advanceTimeBy(5_000L)
+            mailbox.failNextPost = true
+            // The stuck stop goes first and fails again, so this Location is never queued.
+            assertFailsWith<NetworkException> { aliceClient.sendLocation(2.0, 2.0, emptySet()) }
+            aliceClient.processOutboxes() // the network is back: the stop goes out
+            advanceTimeBy(5_000L)
+            aliceClient.sendLocation(3.0, 3.0, emptySet())
+            val delivered = bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            assertEquals(listOf(3.0), delivered.map { it.lat }, "the resume must still follow the stop")
+        }
+
+    @Test
+    fun `after a restart the first Location to an unresponsive friend skips the throttle`() =
+        runTest {
+            val mailbox = MemoryMailboxClient()
+            setVirtualTime(1_700_000_000_000L)
+            val (aliceManager, aliceClient, bobClient) = quietBob(mailbox)
+
+            aliceClient.sendStoppedSharing()
+            advanceTimeBy(5_000L)
+            val restarted = LocationClient("http://localhost", aliceManager, mailbox) // e.g. killed while not sharing
+            restarted.sendLocation(2.0, 2.0, emptySet())
+            val delivered = bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            assertEquals(listOf(2.0), delivered.map { it.lat }, "we can't tell the stop was last, so the resume must go")
+        }
 }
