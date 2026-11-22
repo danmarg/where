@@ -32,7 +32,10 @@ import kotlin.test.fail
  * Mutation check (done by hand; each is caught in at most 4 actions at the default depth): a soft-failed
  * frame that doesn't commit its ratchet (the #416 shape: a corrupt frame in a new epoch), CancelPut on the
  * responder's first ratchet (BootstrapOutboxCancelTest's bug), and replays not ACKed. Not modelled: a network
- * adversary, the server's TTL, and loss of a seq-1 frame (§5.4.5 accepts that as unrecoverable).
+ * adversary, and loss of a seq-1 frame (§5.4.5 accepts that as unrecoverable). The server's TTL adds nothing
+ * here: within it nothing expires, and past it the expiry that matters is that seq-1 loss. What a long absence
+ * does to the client's pause, parting keepalive and retention is LongAbsenceTest's job, since that is
+ * LocationClient, not ProtocolCore.
  *
  * Bounds: `-Dschedule.depth=N` (default [DEFAULT_DEPTH]; CI runs the default, a nightly job a
  * deeper one). A violation prints its action sequence; `-Dschedule.maxStates` caps the search.

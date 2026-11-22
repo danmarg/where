@@ -56,13 +56,41 @@ data class FriendEntry(
     val stoppedAtTs: Long? = null,
 ) {
     companion object {
-        const val ACK_TIMEOUT_SECONDS = 7 * 24 * 3600L
+        /**
+         * After this long without a frame from a friend we stop sending to them ([isStale]) until
+         * they send again. Unrelated to how long the session survives: that's the server's
+         * [MAILBOX_RETENTION_SECONDS].
+         */
+        const val INACTIVITY_PAUSE_SECONDS = 7 * 24 * 3600L
+
+        /**
+         * [mayNeedRepair] shows this long before [MAILBOX_RETENTION_SECONDS] runs out: our
+         * transition frame to a silent friend (spec §5.4.1) usually goes out within minutes of our
+         * last receipt from them and expires a retention later, so the warning has to come first.
+         * Covers that delay and clock skew.
+         */
+        const val REPAIR_WARNING_MARGIN_SECONDS = 2 * 24 * 3600L
     }
 
+    /**
+     * Nothing received from this friend for [INACTIVITY_PAUSE_SECONDS]: we stop sending to them
+     * (still polling) until they send again. Clears by itself when a frame arrives.
+     */
     val isStale: Boolean
         get() {
             val now = currentTimeSeconds()
-            return lastRecvTs != Long.MAX_VALUE && (now - lastRecvTs) > ACK_TIMEOUT_SECONDS
+            return lastRecvTs != Long.MAX_VALUE && (now - lastRecvTs) > INACTIVITY_PAUSE_SECONDS
+        }
+
+    /**
+     * UI hint: silent for nearly the server's retention, so what this friend needs has probably
+     * expired. Judged from a successful empty poll ([isCaughtUp]) after the threshold, not the
+     * clock, so a returning device doesn't show it before it has looked. Assumes a sane clock.
+     */
+    val mayNeedRepair: Boolean
+        get() {
+            if (lastRecvTs == Long.MAX_VALUE || !isCaughtUp) return false
+            return lastPollTs - lastRecvTs > MAILBOX_RETENTION_SECONDS - REPAIR_WARNING_MARGIN_SECONDS
         }
 
     val id: String get() = canonicalId(session.aliceFp, session.bobFp)

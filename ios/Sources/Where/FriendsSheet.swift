@@ -220,7 +220,11 @@ private struct FriendInfoColumn: View {
             Text(peerSubtitleText(display))
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            if friend.isStale {
+            if friend.mayNeedRepair {
+                Text(MR.strings().friend_may_need_repair_warning.localized())
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            } else if friend.isStale {
                 Text(MR.strings().friend_inactive_warning.localized())
                     .font(.caption)
                     .foregroundStyle(.red)

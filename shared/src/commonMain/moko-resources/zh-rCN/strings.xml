@@ -52,6 +52,7 @@
     <string name="friend">朋友</string>
     <string name="friend_">朋友</string>
     <string name="friend_inactive_warning">朋友不活跃 — 共享已暂停</string>
+    <string name="friend_may_need_repair_warning">长时间没有联系 — 可能需要重新配对</string>
     <string name="permanently_delete_key_warning">密钥将被永久删除。</string>
     <string name="qr_scanner_simulator">二维码扫描器（模拟器）</string>
     <string name="camera_unavailable_emulator">模拟器中无法使用相机。请手动输入邀请网址。</string>

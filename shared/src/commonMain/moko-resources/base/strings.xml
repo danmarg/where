@@ -52,6 +52,7 @@
     <string name="friend">Friend</string>
     <string name="friend_">Friend</string>
     <string name="friend_inactive_warning">Friend inactive — sharing paused</string>
+    <string name="friend_may_need_repair_warning">No contact for a long time — you may need to pair again</string>
     <string name="permanently_delete_key_warning">This will permanently delete the key.</string>
     <string name="qr_scanner_simulator">QR Scanner (Simulator)</string>
     <string name="camera_unavailable_emulator">Camera is unavailable in the emulator. Enter an invite URL manually.</string>

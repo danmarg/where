@@ -52,6 +52,7 @@
     <string name="friend">Ami</string>
     <string name="friend_">Ami</string>
     <string name="friend_inactive_warning">Ami inactif — partage suspendu</string>
+    <string name="friend_may_need_repair_warning">Aucun contact depuis longtemps — il faudra peut-être refaire l\'appairage</string>
     <string name="permanently_delete_key_warning">La clé sera définitivement effacée.</string>
     <string name="qr_scanner_simulator">Scanner de QR (simulateur)</string>
     <string name="camera_unavailable_emulator">La caméra n\'est pas disponible dans l\'émulateur. Saisissez une URL d\'invitation manuellement.</string>

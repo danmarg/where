@@ -78,7 +78,7 @@ Uses an in-memory store by default; set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_
 | with the layout | off (default) | both | legacy |
 | with the layout | on | both | compact |
 
-Turning the flag off only stops new compact writes; it does **not** convert compact records already stored. Rolling back to a server from before the layout is safe only once no compact records remain, since that server fails every poll of a token holding one. To roll back: turn the flag off, wait for clients to ack the compact items or for them to expire (at most 7 days; DynamoDB TTL deletion is lazy and can lag, so expiry is an upper bound, not a guarantee), and verify none remain (for example, scan `messages` for items with a `c` attribute) before deploying the old binary.
+Turning the flag off only stops new compact writes; it does **not** convert compact records already stored. Rolling back to a server from before the layout is safe only once no compact records remain, since that server fails every poll of a token holding one. To roll back: turn the flag off, wait for clients to ack the compact items or for them to expire (at most 90 days, the message retention; DynamoDB TTL deletion is lazy and can lag, so expiry is an upper bound, not a guarantee), and verify none remain (for example, scan `messages` for items with a `c` attribute) before deploying the old binary.
 
 ```bash
 ./gradlew :server:run

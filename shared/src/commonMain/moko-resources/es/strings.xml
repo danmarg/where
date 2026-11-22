@@ -52,6 +52,7 @@
     <string name="friend">Amigo</string>
     <string name="friend_">Amigo</string>
     <string name="friend_inactive_warning">Amigo inactivo: uso compartido en pausa</string>
+    <string name="friend_may_need_repair_warning">Sin contacto desde hace mucho: puede que tengas que volver a emparejar</string>
     <string name="permanently_delete_key_warning">Esto borrará la clave de forma permanente.</string>
     <string name="qr_scanner_simulator">Escáner QR (simulador)</string>
     <string name="camera_unavailable_emulator">La cámara no está disponible en el emulador. Introduce una URL de invitación manualmente.</string>

@@ -188,7 +188,13 @@ fun FriendsSheet(
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
-                                    if (friend.isStale) {
+                                    if (friend.mayNeedRepair) {
+                                        Text(
+                                            stringResource(MR.strings.friend_may_need_repair_warning),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.error,
+                                        )
+                                    } else if (friend.isStale) {
                                         Text(
                                             stringResource(MR.strings.stale_friend_warning),
                                             style = MaterialTheme.typography.bodySmall,

@@ -30,6 +30,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import net.af0.where.e2ee.MAILBOX_RETENTION_SECONDS
 import org.slf4j.LoggerFactory
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
@@ -85,7 +86,27 @@ private val json =
 private const val RATE_LIMIT_WINDOW_MS = 60 * 1000L
 private const val MAX_BODY_BYTES = 4 * 1024
 private const val POLL_BASELINE_LATENCY_MS = 50L
-private const val MAILBOX_TTL_MS = 7 * 24 * 60 * 60 * 1000L
+
+/** How long an unread message is kept: long enough for a device to be away that long (§10.2). */
+private const val MAILBOX_TTL_MS = MAILBOX_RETENTION_SECONDS * 1000L
+
+/**
+ * How long a message's dedup record is kept: only long enough for retries, since these records
+ * (one per post, kept after the message is read) are the server's lasting traffic log (§2.1.1, §10.2).
+ */
+private const val RECEIVED_IDS_TTL_MS = 7 * 24 * 60 * 60 * 1000L
+
+/**
+ * How long an unread KeyExchangeInit is kept. It only matters while its invite is valid (48 h),
+ * so there's no reason to hold a scanner's key and name for [MAILBOX_TTL_MS].
+ */
+private const val KEY_EXCHANGE_INIT_TTL_MS = 7 * 24 * 60 * 60 * 1000L
+
+/** The TTL for [payload]: a session frame is kept for the retention, a pairing message shorter. */
+private fun messageTtlMs(payload: JsonElement): Long {
+    val type = ((payload as? JsonObject)?.get("type") as? JsonPrimitive)?.content
+    return if (type == "KeyExchangeInit") KEY_EXCHANGE_INIT_TTL_MS else MAILBOX_TTL_MS
+}
 
 /** Maximum messages retained per token. Prevents unbounded memory growth from floods. */
 private const val MAX_QUEUE_DEPTH = 10000
@@ -244,10 +265,13 @@ private data class MailboxEntry(val payload: JsonElement, val expiresAt: Long, v
 
 class InMemoryMailboxState(
     private val limiter: InProcessRateLimiter = InProcessRateLimiter(),
+    private val clock: () -> Long = System::currentTimeMillis,
 ) : MailboxStore {
     private val mailboxes = ConcurrentHashMap<String, ConcurrentLinkedQueue<MailboxEntry>>()
-    private val receivedIds = ConcurrentHashMap<String, MutableSet<String>>()
-    private val receivedIdsOrder = ConcurrentHashMap<String, ConcurrentLinkedQueue<String>>()
+
+    // token -> msgId -> when its dedup record expires (ms), oldest first; see RECEIVED_IDS_TTL_MS.
+    // Each token's map is only touched under that token's lock.
+    private val receivedIds = ConcurrentHashMap<String, LinkedHashMap<String, Long>>()
     private val dummyQueue = ConcurrentLinkedQueue<MailboxEntry>()
 
     private val locks = StripedLocks()
@@ -265,29 +289,35 @@ class InMemoryMailboxState(
         msgId: String?,
     ): Boolean =
         synchronized(getLock(token)) {
-            val now = System.currentTimeMillis()
+            val now = clock()
 
             if (msgId != null) {
-                val ids = receivedIds.getOrPut(token) { ConcurrentHashMap.newKeySet() }
-                if (ids.contains(msgId)) return true
+                val seenUntil = receivedIds[token]?.get(msgId)
+                if (seenUntil != null && seenUntil > now) return true
             }
 
             if (!limiter.checkPost(token)) return false
 
             val queue = mailboxes.getOrPut(token) { ConcurrentLinkedQueue() }
             queue.removeIf { it.expiresAt <= now }
-            if (queue.size >= MAX_QUEUE_DEPTH) return false
-            queue.add(MailboxEntry(payload, now + MAILBOX_TTL_MS, msgId))
+            // The dedup record can expire before the message (RECEIVED_IDS_TTL_MS): a retry of a
+            // message still queued must not queue it twice. Like DynamoMailboxState's conditional put.
+            val alreadyQueued = msgId != null && queue.any { it.msgId == msgId }
+            if (!alreadyQueued) {
+                if (queue.size >= MAX_QUEUE_DEPTH) return false
+                queue.add(MailboxEntry(payload, now + messageTtlMs(payload), msgId))
+            }
             if (msgId != null) {
-                receivedIds.getOrPut(token) { ConcurrentHashMap.newKeySet() }.add(msgId)
-                receivedIdsOrder.getOrPut(token) { ConcurrentLinkedQueue() }.add(msgId)
+                val ids = receivedIds.getOrPut(token) { LinkedHashMap() }
+                ids.remove(msgId) // re-insert, so the map stays in expiry order
+                ids[msgId] = now + RECEIVED_IDS_TTL_MS
             }
             return true
         }
 
     override fun drain(token: String): List<JsonElement>? {
         if (!limiter.checkGet(token)) return null
-        val now = System.currentTimeMillis()
+        val now = clock()
         val queue = mailboxes[token] ?: dummyQueue
         return queue.asSequence()
             .filter { it.expiresAt > now }
@@ -320,7 +350,7 @@ class InMemoryMailboxState(
     internal fun evictWithParams(rateLimitWindowMs: Long) {
         limiter.evict(rateLimitWindowMs)
 
-        val now = System.currentTimeMillis()
+        val now = clock()
         mailboxes.forEach { (token, _) ->
             mailboxes.computeIfPresent(token) { _, q ->
                 q.removeIf { it.expiresAt <= now }
@@ -328,13 +358,16 @@ class InMemoryMailboxState(
             }
         }
 
-        receivedIds.forEach { (token, set) ->
-            if (set.size > MAX_QUEUE_DEPTH) {
-                val order = receivedIdsOrder[token]
-                while (set.size > MAX_QUEUE_DEPTH && order != null) {
-                    val oldest = order.poll() ?: break
-                    set.remove(oldest)
+        receivedIds.forEach { (token, ids) ->
+            synchronized(getLock(token)) {
+                // Oldest first, so expired records are a prefix, then the size cap trims from the front.
+                val oldestFirst = ids.entries.iterator()
+                while (oldestFirst.hasNext()) {
+                    val (_, expiresAt) = oldestFirst.next()
+                    if (expiresAt > now && ids.size <= MAX_QUEUE_DEPTH) break
+                    oldestFirst.remove()
                 }
+                if (ids.isEmpty()) receivedIds.remove(token)
             }
         }
     }
@@ -472,9 +505,8 @@ internal object CompactPayload {
  * message count, lazily seeded from one real (paginated, exact) count query and then maintained
  * by simple increment/decrement on post/delete - see currentDepth()'s doc for why a per-post
  * COUNT scan was too expensive under real sustained traffic (one party posting steadily while
- * the other is offline for hours/days - not just an abuse scenario) and why the cache's only
- * failure mode (drift from TTL-expired-but-undeleted rows) can't manifest inside the 7-day
- * window the app is actually designed to tolerate.
+ * the other is offline for hours/days - not just an abuse scenario) and how its one failure
+ * mode (overcounting rows that expired without an app delete) is bounded by a daily re-count.
  */
 class DynamoMailboxState(
     private val client: DynamoDbClient,
@@ -484,9 +516,13 @@ class DynamoMailboxState(
     // Write location messages in [CompactPayload]'s layout. drain() reads both layouts whatever
     // this is set to; see CompactPayload for why it's a flag.
     private val compactPayloads: Boolean = false,
+    private val clock: () -> Long = System::currentTimeMillis,
 ) : MailboxStore {
     private val locks = StripedLocks()
-    private val depthCounts = ConcurrentHashMap<String, Int>()
+    private val depthCounts = ConcurrentHashMap<String, CachedDepth>()
+
+    /** A token's live message count, and when it was last counted from the table (ms). */
+    private data class CachedDepth(val count: Int, val countedAt: Long)
 
     private fun getLock(token: String) = locks[token]
 
@@ -580,6 +616,10 @@ class DynamoMailboxState(
         const val POSTED_AT_INDEX_NAME = "postedAt-index"
         const val MAX_BATCH_RETRIES = 8
         const val MAX_DEPTH_CACHE_ENTRIES = 50_000
+
+        // A cached depth is re-counted from the table once it's this old, so rows the TTL sweep
+        // deleted (which never decrement it) stop counting against MAX_QUEUE_DEPTH.
+        const val DEPTH_CACHE_RESEED_MS = 24 * 60 * 60 * 1000L
     }
 
     override fun checkIpRateLimit(
@@ -594,8 +634,9 @@ class DynamoMailboxState(
     ): Boolean {
         if (!limiter.checkPost(token)) return false
         synchronized(getLock(token)) {
-            val now = System.currentTimeMillis()
-            val expiresAt = (now + MAILBOX_TTL_MS) / 1000
+            val now = clock()
+            val expiresAt = (now + messageTtlMs(payload)) / 1000
+            val receivedIdExpiresAt = (now + RECEIVED_IDS_TTL_MS) / 1000
 
             if (msgId != null) {
                 val existing =
@@ -607,7 +648,9 @@ class DynamoMailboxState(
                             .build(),
                     )
                 if (existing.hasItem()) {
-                    // Already seen: idempotent no-op, matches DynamoMailboxState's receivedIds dedup check.
+                    // Already seen: idempotent no-op. Not checked against its expiresAt: a record
+                    // past RECEIVED_IDS_TTL_MS that the TTL sweep hasn't removed yet (it can lag ~48 h)
+                    // just dedups a little longer, which is safe (the message itself was posted).
                     return true
                 }
             }
@@ -681,7 +724,7 @@ class DynamoMailboxState(
                                 mapOf(
                                     "token" to AttributeValue.fromS(token),
                                     "msgId" to AttributeValue.fromS(msgId),
-                                    "expiresAt" to AttributeValue.fromN(expiresAt.toString()),
+                                    "expiresAt" to AttributeValue.fromN(receivedIdExpiresAt.toString()),
                                 ),
                             )
                             .build(),
@@ -694,7 +737,7 @@ class DynamoMailboxState(
                 depthCounts.remove(token)
                 throw e
             }
-            depthCounts[token] = depth + 1
+            depthCounts.computeIfPresent(token) { _, cached -> cached.copy(count = depth + 1) }
             return true
         }
     }
@@ -718,19 +761,24 @@ class DynamoMailboxState(
      * the already-reduced count and the late decrement would then subtract it a second time - an
      * undercount, which lets post() exceed MAX_QUEUE_DEPTH.
      *
-     * Invariant: this cache is exact for the supported 7-day mailbox lifetime - within that
-     * window every delete goes through deleteById/deleteByIds, which decrement it, so it can
-     * never diverge from the true live count. It is *not* guaranteed exact past that window: a
-     * message DynamoDB's native TTL sweep deletes (rather than the app) doesn't decrement the
-     * cache, since TTL fires with no application hook. That can only happen to a message that's
-     * already 7 days old, which is already past the "up to 7 days without ratcheting" bound the
-     * app is designed around - a mailbox that old is expected to need a restart/re-pair anyway,
-     * not to keep relying on an exact count.
+     * Drift: every app delete goes through deleteById/deleteByIds, which decrement it, but a
+     * message DynamoDB's native TTL sweep deletes doesn't (TTL fires with no application hook),
+     * and a message past its expiresAt stops being live before the sweep. Either way the cache
+     * only ever overcounts, which can reject a post early but never lets a queue exceed
+     * MAX_QUEUE_DEPTH. To bound that, an entry older than [DEPTH_CACHE_RESEED_MS] is re-counted
+     * from the table (exact: the count runs under the same lock as every delete, and filters on
+     * expiresAt).
      */
     private fun currentDepth(
         token: String,
         now: Long,
-    ): Int = depthCounts.getOrPut(token) { queryLiveDepth(token, now) }
+    ): Int {
+        val cached = depthCounts[token]
+        if (cached != null && now - cached.countedAt < DEPTH_CACHE_RESEED_MS) return cached.count
+        val count = queryLiveDepth(token, now)
+        depthCounts[token] = CachedDepth(count, now)
+        return count
+    }
 
     private fun queryLiveDepth(
         token: String,
@@ -764,13 +812,16 @@ class DynamoMailboxState(
         return count
     }
 
+    private fun isLive(item: Map<String, AttributeValue>): Boolean =
+        (item["expiresAt"]?.n()?.toLongOrNull() ?: Long.MAX_VALUE) > clock() / 1000
+
     // Must be called while holding getLock(token) - see currentDepth()'s doc.
     private fun decrementDepth(
         token: String,
         by: Int,
     ) {
-        depthCounts.computeIfPresent(token) { _, count ->
-            (count - by).coerceAtLeast(0).takeIf { it > 0 }
+        depthCounts.computeIfPresent(token) { _, cached ->
+            (cached.count - by).takeIf { it > 0 }?.let { cached.copy(count = it) }
         }
     }
 
@@ -785,7 +836,7 @@ class DynamoMailboxState(
      */
     override fun drain(token: String): List<JsonElement>? {
         if (!limiter.checkGet(token)) return null
-        val now = System.currentTimeMillis() / 1000
+        val now = clock() / 1000
         val messages = mutableListOf<JsonElement>()
         var lastKey: Map<String, AttributeValue>? = null
         do {
@@ -845,7 +896,8 @@ class DynamoMailboxState(
                         .returnValues(ReturnValue.ALL_OLD)
                         .build(),
                 )
-            if (response.hasAttributes()) decrementDepth(token, 1)
+            // Only a row still live was counted (currentDepth's re-count skips expired ones).
+            if (response.hasAttributes() && isLive(response.attributes())) decrementDepth(token, 1)
         }
         return true
     }
@@ -880,14 +932,14 @@ class DynamoMailboxState(
                                         messagesTable to
                                             KeysAndAttributes.builder()
                                                 .keys(keysToCheck)
-                                                .projectionExpression("msgId")
+                                                .projectionExpression("msgId, expiresAt")
                                                 .consistentRead(true)
                                                 .build(),
                                     ),
                                 )
                                 .build(),
                         )
-                    existingCount += response.responses()[messagesTable]?.size ?: 0
+                    existingCount += response.responses()[messagesTable]?.count { isLive(it) } ?: 0
                     keysToCheck = response.unprocessedKeys()[messagesTable]?.keys() ?: emptyList()
                 }
             }
