@@ -35,8 +35,8 @@ class LocationServiceRestartWorker(
             Log.i(TAG, "No friends or pending invites; skipping service restart")
             return Result.success()
         }
-        // Acks, keepalives and pairing handshakes are what keep a session from expiring
-        // (ACK_TIMEOUT_SECONDS), so they must keep happening when LocationService isn't running.
+        // Acks, keepalives and pairing handshakes keep friends from pausing us
+        // (INACTIVITY_PAUSE_SECONDS), so they must keep happening when LocationService isn't running.
         // It only runs in the background while we share (#481): when we don't (or can't, without
         // location permission), poll from here. When it does run, nudging it is enough - it polls
         // itself, and polling here too would double the background request rate.

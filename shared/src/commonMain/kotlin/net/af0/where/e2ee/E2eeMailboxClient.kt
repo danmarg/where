@@ -137,7 +137,7 @@ object KtorMailboxClient : MailboxClient {
             // A real HTTP response - even an error one - proves the connection itself is not
             // wedged; only a genuine transport-level hang/failure should count toward the reset
             // threshold. Counting this would let one friend's permanently invalid token (e.g.
-            // after re-pairing, or 7-day mailbox expiry per the retention policy) keep forcing
+            // after re-pairing, or mailbox expiry per the retention policy) keep forcing
             // disruptive resets that do nothing to fix it and can abort other friends' healthy
             // concurrent calls (see CLOSE_GRACE_PERIOD_MS).
             if (consecutiveFailures != 0) {

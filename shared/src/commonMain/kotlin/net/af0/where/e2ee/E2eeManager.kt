@@ -56,13 +56,44 @@ data class FriendEntry(
     val stoppedAtTs: Long? = null,
 ) {
     companion object {
-        const val ACK_TIMEOUT_SECONDS = 7 * 24 * 3600L
+        /**
+         * After this long without a frame from a friend we stop sending to them ([isStale]) until
+         * they send again. Unrelated to how long the session survives: that's the server's
+         * [MAILBOX_RETENTION_SECONDS].
+         */
+        const val INACTIVITY_PAUSE_SECONDS = 7 * 24 * 3600L
+
+        /**
+         * [mayNeedRepair] shows this long before [MAILBOX_RETENTION_SECONDS] runs out: our
+         * transition frame to a silent friend (spec §5.4.1) usually goes out within minutes of our
+         * last receipt from them and expires a retention later, so the warning has to come first.
+         * Covers that delay and clock skew.
+         */
+        const val REPAIR_WARNING_MARGIN_SECONDS = 2 * 24 * 3600L
     }
 
+    /**
+     * Nothing received from this friend for [INACTIVITY_PAUSE_SECONDS]: we stop sending to them
+     * (still polling) until they send again. Clears by itself when a frame arrives.
+     */
     val isStale: Boolean
         get() {
             val now = currentTimeSeconds()
-            return lastRecvTs != Long.MAX_VALUE && (now - lastRecvTs) > ACK_TIMEOUT_SECONDS
+            return lastRecvTs != Long.MAX_VALUE && (now - lastRecvTs) > INACTIVITY_PAUSE_SECONDS
+        }
+
+    /**
+     * Silent for nearly the server's retention: what this friend needs from us has probably
+     * expired, so the friendship may need a re-pair. A hint for the UI only: nothing stops
+     * polling, and it clears by itself if a frame arrives. Judged from a successful poll that
+     * found nothing ([isCaughtUp]) made after the threshold ([lastPollTs]), not from the clock
+     * alone, so a device back from a long absence doesn't show it before a poll has actually had
+     * the chance to find waiting frames (a failed one doesn't count).
+     */
+    val mayNeedRepair: Boolean
+        get() {
+            if (lastRecvTs == Long.MAX_VALUE || !isCaughtUp) return false
+            return lastPollTs - lastRecvTs > MAILBOX_RETENTION_SECONDS - REPAIR_WARNING_MARGIN_SECONDS
         }
 
     val id: String get() = canonicalId(session.aliceFp, session.bobFp)

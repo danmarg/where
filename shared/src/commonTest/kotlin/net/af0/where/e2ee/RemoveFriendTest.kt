@@ -229,7 +229,7 @@ class RemoveFriendTest {
                 aliceClient.removeFriend(bob.id)
                 assertEquals(1, aliceManager.getOrphanedOutbox().size)
 
-                mockTime.advanceSeconds(FriendEntry.ACK_TIMEOUT_SECONDS + 60)
+                mockTime.advanceSeconds(MAILBOX_RETENTION_SECONDS + 60)
                 chaos.failPostProbability = 0.0
                 val postsBefore = counting.posts
                 aliceClient.processOutboxes()
