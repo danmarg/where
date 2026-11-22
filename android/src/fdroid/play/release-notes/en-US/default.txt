@@ -1,2 +1,3 @@
 • No more persistent notification while you aren't sharing your location: once you leave the app, it only checks in briefly now and then to keep your connections with friends active.
+• Friends who haven't opened the app for up to 3 months reconnect on their own, without pairing again.
 • Reliability improvements.

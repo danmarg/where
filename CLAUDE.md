@@ -67,7 +67,7 @@ Uses a standard, bidirectional Double Ratchet protocol with X25519 ephemeral key
 
 ### Server state
 - Mailboxes are persisted in DynamoDB (on-demand, TTL-expired). State survives restarts.
-- Messages are retained for 7 days, aligning with the client re-pair timeout.
+- Unread messages are retained for 90 days (`MAILBOX_RETENTION_SECONDS`, shared with the client), the longest a device can be away without a re-pair; dedup records (`receivedIds`), the one per-post record kept after a message is read, for 7 days. The client pauses a friend it hasn't heard from for 7 days (`isStale`) and suggests a re-pair after ~88 (`mayNeedRepair`); see `docs/long-absence-recovery.md`.
 
 ---
 

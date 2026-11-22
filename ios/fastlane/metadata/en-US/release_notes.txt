@@ -1,3 +1,4 @@
 • If you turn off location permission, friends now see that you've stopped sharing instead of your last location, and your location is sent again when permission returns.
 • Friends are now reliably told when you stop sharing, even if the app was interrupted at the time.
+• Friends who haven't opened the app for up to 3 months reconnect on their own, without pairing again.
 • Reliability and security hardening.
