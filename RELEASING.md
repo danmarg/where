@@ -57,12 +57,18 @@ These are pure track promotions (no new binary, no metadata/changelog re-upload)
 ./build.sh --deploy-android-github-binaries
 ```
 
-This is `android fastlane release_github_binaries`. It requires a clean tree (run it right after
-step 2's push, before making other changes) and:
+This is `android fastlane release_github_binaries`. Run it after step 2's `deploy`, from `main`
+with a clean tree. It:
+- Stops unless HEAD is on `origin/main`; a local `main` that is only ahead (deploy's
+  version-bump commit) is pushed first.
+- Stops if `v<versionName>` is already on GitHub at another commit: that version was released,
+  so run `deploy` first. Run it again at the same commit (say, after a failed upload) and it just
+  re-uploads. To repair a release at its original commit, check that commit out
+  (`git checkout --detach <sha>`) and set `FORCE_RETAG=1`.
 - Runs `./gradlew clean`, then builds signed `standardGms` (universal) and `standardFdroid`
   (per-ABI) release APKs. The clean matters: leftover incremental output changes the dex, and
   F-Droid's reproducible-build check then rejects the release.
-- Tags `HEAD` as `v<versionName>` and pushes the tag.
+- Tags `HEAD` as `v<versionName>` and pushes the tag (lightweight, so F-Droid records the commit).
 - Creates a GitHub Release at that tag and uploads all the APKs as assets.
 
 Nothing else is manual. `fdroiddata/metadata/net.af0.where.yml` has `AutoUpdateMode: Version` and

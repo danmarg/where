@@ -96,35 +96,57 @@ platform :android do
     version_name = File.read(gradle_file).match(/versionName\s*=\s*"([^"]+)"/)[1]
     tag = "v#{version_name}"
     repo = "danmarg/where"
+    head = `git rev-parse HEAD`.strip
+
+    # F-Droid builds the tag from GitHub, so HEAD must be on origin/main. A local main that is
+    # only ahead (deploy's version-bump commit, not pushed yet) is pushed here; anything else
+    # (another branch, a diverged main) stops.
+    sh("git", "fetch", "--quiet", "origin", "main")
+    unless system("git", "merge-base", "--is-ancestor", "HEAD", "origin/main")
+      on_main = `git rev-parse --abbrev-ref HEAD`.strip == "main"
+      unless on_main && system("git", "merge-base", "--is-ancestor", "origin/main", "HEAD")
+        UI.user_error!("HEAD (#{head[0, 8]}) isn't on origin/main; release from main.")
+      end
+      UI.message("Pushing main to origin...")
+      sh("git", "push", "origin", "main")
+    end
+
+    # The tag on GitHub is the authority (a local tag may be stale). One at another commit means
+    # this version was already released: re-tagging it would replace that release's APKs with a
+    # different build (as on 2026-11-22, run before deploy's bump). FORCE_RETAG=1 allows it, e.g.
+    # to repair a release by rebuilding it at its original commit (git checkout --detach <sha>).
+    # The commit, peeled (^{}) if it's an annotated tag.
+    remote_refs = `git ls-remote --tags origin "refs/tags/#{tag}" "refs/tags/#{tag}^{}"`.lines.map(&:split)
+    remote_tag = (remote_refs.find { |_, ref| ref.end_with?("^{}") } || remote_refs.first)&.first
+    if remote_tag && remote_tag != head && ENV["FORCE_RETAG"] != "1"
+      UI.user_error!(
+        "#{tag} is already released at #{remote_tag[0, 8]}, not HEAD (#{head[0, 8]}). Bump the version " \
+        "first (./build.sh --deploy-android-internal), or set FORCE_RETAG=1 to move the tag.",
+      )
+    end
 
     UI.message("Building signed release APKs for #{tag}...")
+    # F-Droid rebuilds the tag from a fresh checkout and requires our APKs to match byte for
+    # byte. Incremental build output left over in this checkout changes R8's input and so the
+    # dex (v2026.10.09.1 and .10.14.2 failed verification this way); a clean build matches.
+    gradle(project_dir: "../", task: "clean")
     gradle(project_dir: "../", task: ":android:assembleStandardGmsRelease", properties: { "enableAbiSplits" => "true" })
     gradle(project_dir: "../", task: ":android:assembleStandardFdroidRelease", properties: { "enableAbiSplits" => "true" })
 
     # Tag after a successful build so it always points to the commit whose source
     # was actually compiled (not a pre-build HEAD that may lack a version bump).
-    if system("git", "rev-parse", "--verify", "--quiet", tag)
-      # Tag exists — make sure it points to HEAD; force-update if not.
-      current = `git rev-list -n1 #{tag}`.strip
-      head    = `git rev-parse HEAD`.strip
-      if current != head
-        UI.message("Tag #{tag} exists but points to #{current[0,8]}, not HEAD (#{head[0,8]}); re-tagging.")
-        # Lightweight (no -a/-m): an annotated tag's SHA-1 is the tag OBJECT, distinct from the
-        # commit it points to. F-Droid's Tags-based autoupdate (metadata/net.af0.where.yml)
-        # recorded that tag-object hash verbatim as the build "commit" instead of peeling it,
-        # producing a real (if harmless) provenance mismatch against what actually got built.
-        # A lightweight tag's SHA-1 IS the commit hash, so there's nothing to peel.
-        sh("git", "tag", "-f", tag)
-        sh("git", "push", "origin", tag, "--force")
-      else
-        unless system("git", "ls-remote", "--exit-code", "--tags", "origin", tag, out: File::NULL)
-          sh("git", "push", "origin", tag)
-        end
-      end
-    else
-      UI.message("Creating tag #{tag} at HEAD and pushing...")
-      sh("git", "tag", tag)
-      sh("git", "push", "origin", tag)
+    # Lightweight (no -a/-m): an annotated tag's SHA-1 is the tag OBJECT, distinct from the
+    # commit it points to. F-Droid's Tags-based autoupdate (metadata/net.af0.where.yml)
+    # recorded that tag-object hash verbatim as the build "commit" instead of peeling it,
+    # producing a real (if harmless) provenance mismatch against what actually got built.
+    # A lightweight tag's SHA-1 IS the commit hash, so there's nothing to peel.
+    sh("git", "tag", "-f", tag)
+    if remote_tag.nil?
+      UI.message("Pushing new tag #{tag}...")
+      sh("git", "push", "origin", "refs/tags/#{tag}")
+    elsif remote_tag != head
+      UI.important("FORCE_RETAG: moving #{tag} from #{remote_tag[0, 8]} to #{head[0, 8]}.")
+      sh("git", "push", "--force", "origin", "refs/tags/#{tag}")
     end
 
     # GMS: Play Store delivery goes through the AAB (bundleStandardGmsRelease, elsewhere); the
