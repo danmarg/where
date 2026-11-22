@@ -148,10 +148,12 @@ object Session {
         // 2. Check skipped message key cache first
         val cachedKey = cleanState.skippedMessageKeys[cacheKey]
         if (cachedKey != null) {
+            val aad = cleanState.parties.recvAad(seq, remoteDhPub, ackRemoteDhPub)
             // Copies: the cached entry belongs to the input state (see the ownership rule below).
+            // openMessage consumes (wipes) both on every exit, so nothing may throw between here
+            // and that call.
             val mk = cachedKey.messageKey.copyOf()
             val nonce = cachedKey.nonce.copyOf()
-            val aad = cleanState.parties.recvAad(seq, remoteDhPub, ackRemoteDhPub)
 
             val plaintext =
                 try {
