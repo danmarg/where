@@ -110,4 +110,57 @@ class LocationServiceRestartWorkerTest {
             assertEquals(LocationService.ACTION_HEARTBEAT_TICK, started.action)
             coVerify(exactly = 0) { poller.poll(any()) }
         }
+
+    @Test
+    fun notSharing_withPermission_pollsDirectlyWithoutStartingService() =
+        runTest {
+            shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
+            app.userStore.setSharing(false)
+            addPendingInvite()
+
+            assertEquals(ListenableWorker.Result.success(), worker().doWork())
+
+            coVerify(exactly = 1) { poller.poll(WakeSource.HEARTBEAT) }
+            assertNull(shadowOf(app).nextStartedService, "no foreground service (and notification) while not sharing")
+        }
+
+    @Test
+    fun notSharing_directPollsAreThrottledToTheMaintenanceInterval() =
+        runTest {
+            shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
+            app.userStore.setSharing(false)
+            addPendingInvite()
+            var now = 1_000_000_000L
+
+            fun run() = worker().also { it.clock = { now } }
+
+            run().doWork()
+            now += 15 * 60 * 1000L // the next periodic run
+            run().doWork()
+            coVerify(exactly = 1) { poller.poll(any()) }
+
+            now += 15 * 60 * 1000L
+            run().doWork()
+            coVerify(exactly = 2) { poller.poll(any()) }
+
+            now -= 60 * 60 * 1000L // clock set back: doesn't hold polling off
+            run().doWork()
+            coVerify(exactly = 3) { poller.poll(any()) }
+        }
+
+    @Test
+    fun sharing_serviceStartRefused_pollIsNotThrottled() =
+        runTest {
+            shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
+            addPendingInvite()
+
+            repeat(2) {
+                val w = worker()
+                w.clock = { 1_000_000_000L }
+                w.startService = { throw IllegalStateException("ForegroundServiceStartNotAllowedException") }
+                w.doWork()
+            }
+
+            coVerify(exactly = 2) { poller.poll(WakeSource.HEARTBEAT) }
+        }
 }

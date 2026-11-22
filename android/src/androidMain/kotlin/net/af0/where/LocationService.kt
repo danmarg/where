@@ -175,6 +175,12 @@ class LocationService : Service() {
     // The poll loop's last view of the foreground, to spot the app leaving it.
     private var wasInForeground = false
 
+    // [elapsedClock] time pollLoop saw the app go to the background; 0 if it never saw it visible.
+    private var backgroundedAt = 0L
+
+    // The network callback's sync in flight; the idle stop waits for it rather than cancel it.
+    private var networkSyncJob: Job? = null
+
     @VisibleForTesting
     internal var consecutiveLateHeartbeats = 0
 
@@ -337,27 +343,28 @@ class LocationService : Service() {
                 override fun onAvailable(network: Network) {
                     Log.d(TAG, "Network available, triggering syncNow()")
                     networkWakeLock.acquire(WAKE_LOCK_TIMEOUT_MS)
-                    serviceScope.launch {
-                        // A location send backing off after failures may retry now.
-                        sendScheduler.onNetworkRestored()
-                        try {
+                    networkSyncJob =
+                        serviceScope.launch {
+                            // A location send backing off after failures may retry now.
+                            sendScheduler.onNetworkRestored()
                             try {
-                                locationClient.syncNow(
-                                    pausedFriendIds = userStore.effectivelyPausedIds(),
-                                    // As FriendPoller's poll: without permission we send nothing,
-                                    // so stops still owed are retried.
-                                    sharingEnabled = canSendLocations(),
-                                )
-                                logReliability(WakeSource.NETWORK, true)
-                            } catch (e: CancellationException) {
-                                throw e
-                            } catch (_: Exception) {
-                                logReliability(WakeSource.NETWORK, false)
+                                try {
+                                    locationClient.syncNow(
+                                        pausedFriendIds = userStore.effectivelyPausedIds(),
+                                        // As FriendPoller's poll: without permission we send nothing,
+                                        // so stops still owed are retried.
+                                        sharingEnabled = canSendLocations(),
+                                    )
+                                    logReliability(WakeSource.NETWORK, true)
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (_: Exception) {
+                                    logReliability(WakeSource.NETWORK, false)
+                                }
+                            } finally {
+                                if (networkWakeLock.isHeld) networkWakeLock.release()
                             }
-                        } finally {
-                            if (networkWakeLock.isHeld) networkWakeLock.release()
                         }
-                    }
                 }
             }
         connectivityManager?.registerDefaultNetworkCallback(networkCallback!!)
@@ -664,13 +671,11 @@ class LocationService : Service() {
                 geofenceCenter = null
                 needsGeofence = true
             }
-            // Note: We don't call stopSelf() here even if permissions are missing or sharing is paused.
-            // This is intentional:
+            // Note: We don't call stopSelf() here. This is intentional:
             // 1. To avoid ForegroundServiceDidNotStartInTimeException on startup.
-            // 2. To allow the service to continue polling for friend updates in the background
-            //    even if we cannot share our own location.
-            // 3. To provide a persistent notification warning the user that their location
-            //    sharing intent is failing due to missing permissions or is paused.
+            // 2. While sharing is on, the persistent notification warns the user that sharing
+            //    is failing (missing permission, location services off).
+            // When sharing is off, pollLoop stops the service once the app is backgrounded.
             return
         }
 
@@ -824,6 +829,22 @@ class LocationService : Service() {
                 stopSelf()
                 return
             }
+            val justBackgrounded = wasInForeground && !inForeground
+            if (justBackgrounded) backgroundedAt = elapsedClock()
+            // Not sharing and not visible: nothing left here needs a foreground service. The
+            // worker keeps up acks and keepalives without the notification (#481); opening the
+            // app or turning sharing on starts the service again. Not straight after the app
+            // leaves the screen: the QR scanner and permission dialogs do that briefly.
+            val stopGraceLeft = backgroundedAt + BACKGROUND_STOP_GRACE_MS - elapsedClock()
+            val idle = !inForeground && !rapid && !needsBackgroundService(userStore)
+            if (idle && stopGraceLeft <= 0) {
+                Log.i(TAG, "Not sharing and in background; stopping service (worker keeps sessions alive).")
+                e2eeManager.addDiagnosticEvent("Service stopped: not sharing in background")
+                // onDestroy cancels serviceScope: let a reconnect's acks and outbox flush finish.
+                networkSyncJob?.join()
+                stopSelf()
+                return
+            }
             // Watchdog: Samsung (and some other OEMs) can silently revoke FLP registrations
             // without any error callback. If we haven't seen a callback for
             // STALE_REGISTRATION_THRESHOLD_MS, force a re-registration.
@@ -841,13 +862,12 @@ class LocationService : Service() {
                 }
             }
             endHighAccuracyIfIdle(elapsedClock())
-            if (wasInForeground && !inForeground) stationary.backgrounded(elapsedClock())
+            if (justBackgrounded) stationary.backgrounded(elapsedClock())
             wasInForeground = inForeground
             maintainStationary(inForeground)
             if (!inForeground) enterStationaryIfIdle(elapsedClock())
-            // Always poll — even when sharing is off we need to process incoming
-            // EpochRotations and post Ratchet Acks so Alice's location doesn't get
-            // stuck.  The interval is 30 min in that case (maintenance-only).
+            // Poll even with sharing off: incoming EpochRotations and Ratchet Acks keep peers'
+            // sessions moving (in the background with sharing off, the worker does this).
             doPoll(source)
             // Heartbeat: ensure we send at least once every 5 minutes when stationary.
             // Runs regardless of foreground state so background location stays alive. Only when
@@ -907,14 +927,16 @@ class LocationService : Service() {
                     sendScheduler.noteKeepalive(sent)
                 }
             }
-            val interval = pollInterval(rapid, inForeground, isSharing)
+            val interval = if (idle) minOf(pollInterval(rapid, inForeground), stopGraceLeft) else pollInterval(rapid, inForeground)
             // Schedule the doze alarm above the platform's ~9-min minimum for
             // setExactAndAllowWhileIdle. Scheduling below that causes silent deferral to the
             // next maintenance window — often hours on Samsung in deep Doze.
             // During rapid polling (key exchange) keep the tight interval for responsiveness.
             // FLP callbacks and the poll timer drive the finer-grained heartbeat while the
             // foreground service is alive; the alarm is the dead-service safety net.
-            scheduleDozeAlarm(if (rapid) interval else maxOf(DOZE_ALARM_INTERVAL_MS, interval))
+            // Also tight for a pending idle stop: the coroutine timer doesn't run while the CPU
+            // sleeps, and the notification would stay up until the next 9-min alarm.
+            scheduleDozeAlarm(if (rapid || idle) interval else maxOf(DOZE_ALARM_INTERVAL_MS, interval))
             // All work for this wake is complete. Release the wake lock now so we don't hold
             // it across the entire sleep interval (could be 10+ min in background).
             if (pollWakeLock.isHeld) pollWakeLock.release()
@@ -1134,13 +1156,13 @@ class LocationService : Service() {
     internal fun pollInterval(
         rapid: Boolean,
         inForeground: Boolean,
-        isSharingLocation: Boolean = true,
     ): Long =
         when {
             rapid -> FriendPoller.RAPID_POLL_INTERVAL_MS
             inForeground -> FriendPoller.FOREGROUND_POLL_INTERVAL_MS
-            isSharingLocation -> 5 * 60 * 1000L // heartbeat + friend poll
-            else -> 30 * 60 * 1000L // maintenance-only (Ratchet keepalives and Acks). Required for DH sync during global pause.
+            // Heartbeat + friend poll. Not sharing in the background, the service stops and the
+            // worker polls instead (LocationServiceRestartWorker.MAINTENANCE_POLL_INTERVAL_MS).
+            else -> 5 * 60 * 1000L
         }
 
     private val friendPoller: FriendPoller by lazy {
@@ -1259,6 +1281,10 @@ class LocationService : Service() {
 
     companion object {
         const val ACTION_POLL_ALARM = "net.af0.where.ACTION_POLL_ALARM"
+
+        /** How long after backgrounding a service with nothing to send stops; see pollLoop. */
+        internal const val BACKGROUND_STOP_GRACE_MS = 30_000L
+
         const val ACTION_FORCE_PUBLISH = "net.af0.where.ACTION_FORCE_PUBLISH"
         const val ACTION_GEOFENCE_EVENT = "net.af0.where.ACTION_GEOFENCE_EVENT"
         const val ACTION_HEARTBEAT_TICK = "net.af0.where.ACTION_HEARTBEAT_TICK"

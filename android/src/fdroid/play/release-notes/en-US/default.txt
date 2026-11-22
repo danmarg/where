@@ -1,3 +1,2 @@
-• Uses much less battery when you stay in one place: GPS turns off after 15 minutes without moving and comes back when the phone senses motion.
-• Friend pins on the map now point exactly at their location.
+• No more persistent notification while you aren't sharing your location: once you leave the app, it only checks in briefly now and then to keep your connections with friends active.
 • Reliability improvements.

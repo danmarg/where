@@ -1,3 +1,4 @@
+• No more persistent notification while you aren't sharing your location: once you leave the app, it only checks in briefly now and then to keep your connections with friends active.
 • Uses less battery after you've been on the move: high-accuracy location now drops back to normal 15 minutes after you last left a place.
 • Friends are now reliably told when you stop sharing, even if the app was interrupted at the time.
 • Reliability and security hardening.

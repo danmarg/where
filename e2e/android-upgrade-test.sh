@@ -4,7 +4,8 @@
 # keep its friend and session. Then, on the upgraded app: sends and a pairing made during a server
 # outage go through once it's back; it recovers from its process being killed, from deep Doze
 # (without a battery exemption) and from a reboot without being opened (unless E2E_QUICK); opening an accepted
-# invite again doesn't pair twice; pausing stops location updates and sends; backup is refused;
+# invite again doesn't pair twice; pausing stops location updates and sends, and in the background
+# also the foreground service and its notification, with the worker still receiving; backup is refused;
 # per-friend pause and friend removal affect only that friend; with location permission revoked
 # nothing is sent, and sharing resumes once it's granted again.
 #
@@ -397,13 +398,44 @@ maestro_flow android/invite-already-used.yaml
 friend_count_is 2 || fail "re-opening an invite accepted before the upgrade paired again"
 echo "✓ Accepted invites rejected on replay, including one accepted before the upgrade"
 
-# The foreground service itself stays up while paused, by design; location updates stop.
+# The foreground service stays up while paused only while the app is visible; location updates stop.
 log "Pausing stops location updates and sending"
 retry 30 location_listening || fail "the app isn't listening for location while sharing"
 maestro_flow android/pause.yaml
 retry 30 location_not_listening || fail "the app still listens for location after pausing"
 assert_no_sends_while_paused
 echo "✓ Pause stops location updates and sending"
+
+# #481: paused and in the background, there's no foreground service (or its notification); the
+# WorkManager worker polls instead, so a friend's messages still get through and are acked.
+log "Paused in the background: no foreground service; the worker keeps the session alive"
+service_running() { adb shell dumpsys activity services "$PKG" | grep -q "LocationService"; }
+service_stopped() { ! service_running; }
+sharing_notification_shown() {
+  adb shell dumpsys notification --noredact | tr -d '\r' | grep -A2 "NotificationRecord(.*pkg=$PKG " |
+    grep -q "channel=where_location"
+}
+last_recv() { app_query "SELECT max(lastRecvTs) FROM Friends"; }
+recv_after() { [ "$(last_recv)" -gt "$1" ]; }
+retry 30 service_running || fail "LocationService isn't running while the app is visible"
+adb shell input keyevent KEYCODE_HOME
+retry 120 service_stopped || fail "LocationService still runs 2 min after leaving the app while paused"
+! sharing_notification_shown || fail "the sharing notification is still shown while paused in the background"
+# The worker's next periodic run (every 15 min; WorkManager won't run a periodic job early, even
+# when forced through jobscheduler) must receive a friend's keepalive. Its ~25-min throttle doesn't
+# hold this run off: it only counts the worker's own polls, and until now we were sharing. Up to
+# 15 min, so only in full runs, as Doze and reboot.
+if [ -n "$E2E_QUICK" ]; then
+  echo "✓ Paused in the background: no service or notification (worker poll skipped: E2E_QUICK)"
+else
+  RECV_BEFORE=$(last_recv)
+  sleep 2 # lastRecvTs is in seconds
+  cli alice keepalive >/dev/null
+  retry 1200 recv_after "$RECV_BEFORE" || fail "the worker didn't receive a friend's keepalive within 20 min while paused in the background"
+  service_stopped || fail "the worker started LocationService while paused"
+  ! sharing_notification_shown || fail "the worker brought the sharing notification back"
+  echo "✓ Paused in the background: no service or notification, and the worker keeps the session going"
+fi
 
 log "Backup is refused"
 ! adb shell dumpsys package "$PKG" | grep -E "^ +pkgFlags=" | grep -q ALLOW_BACKUP ||
