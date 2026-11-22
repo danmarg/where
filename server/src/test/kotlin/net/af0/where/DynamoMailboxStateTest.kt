@@ -42,6 +42,7 @@ import software.amazon.awssdk.services.dynamodb.model.ProjectionType
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest
 import software.amazon.awssdk.services.dynamodb.model.ScalarAttributeType
 import software.amazon.awssdk.services.dynamodb.model.TimeToLiveStatus
+import software.amazon.awssdk.services.dynamodb.model.WriteRequest
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -86,6 +87,7 @@ class DynamoMailboxStateTest {
     // and TTL-seeding assertions fully isolated from any other test's items.
     private fun store(
         compactPayloads: Boolean = false,
+        clock: () -> Long = System::currentTimeMillis,
         wrap: (DynamoDbClient) -> DynamoDbClient = { it },
     ): DynamoMailboxState {
         val client = wrap(createDynamoDbClient("test", "test", "us-east-1", endpoint()))
@@ -95,6 +97,7 @@ class DynamoMailboxStateTest {
             messagesTable = "test_messages_$suffix",
             receivedIdsTable = "test_received_$suffix",
             compactPayloads = compactPayloads,
+            clock = clock,
         ).also { stores.add(it) }
     }
 
@@ -886,6 +889,106 @@ class DynamoMailboxStateTest {
 
         assertTrue(state.post(token, JsonPrimitive("fresh"), "reused"))
         assertEquals(listOf(JsonPrimitive("fresh")), state.drain(token))
+    }
+
+    private fun expiresAt(
+        table: String,
+        token: String,
+        msgId: String,
+    ): Long =
+        createDynamoDbClient("test", "test", "us-east-1", endpoint()).use {
+            it.getItem(
+                GetItemRequest.builder()
+                    .tableName("${table}_${tableCounter - 1}")
+                    .key(mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS(msgId)))
+                    .consistentRead(true)
+                    .build(),
+            ).item().getValue("expiresAt").n().toLong()
+        }
+
+    private fun deleteReceivedId(
+        token: String,
+        msgId: String,
+    ) {
+        createDynamoDbClient("test", "test", "us-east-1", endpoint()).use {
+            it.deleteItem { r ->
+                r.tableName("test_received_${tableCounter - 1}")
+                    .key(mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS(msgId)))
+            }
+        }
+    }
+
+    @Test
+    fun `messages are kept for the retention and dedup records for 7 days`() {
+        val now = 1_800_000_000_000L
+        val state = store(clock = { now })
+        val token = freshToken()
+        assertTrue(state.post(token, JsonPrimitive("m"), "m-1"))
+        assertEquals((now / 1000) + net.af0.where.e2ee.MAILBOX_RETENTION_SECONDS, expiresAt("test_messages", token, "m-1"))
+        assertEquals((now / 1000) + 7 * 86_400, expiresAt("test_received", token, "m-1"))
+    }
+
+    @Test
+    fun `a retry of a still-queued message is not queued twice once its dedup record is gone`() {
+        val state = store()
+        val token = freshToken()
+        assertTrue(state.post(token, JsonPrimitive("first"), "m-1"))
+        deleteReceivedId(token, "m-1") // what the TTL sweep does after 7 days
+        assertTrue(state.post(token, JsonPrimitive("retry"), "m-1"))
+        assertEquals(listOf(JsonPrimitive("first")), state.drain(token))
+        assertTrue(hasReceivedId(token, "m-1"), "the retry restores the dedup record")
+    }
+
+    @Test
+    fun `a late retry of a read message is queued again once its dedup record is gone`() {
+        // The accepted cost of the short dedup TTL: the reader drops this copy as a replay.
+        val state = store()
+        val token = freshToken()
+        assertTrue(state.post(token, JsonPrimitive("first"), "m-1"))
+        state.deleteById(token, "m-1")
+        deleteReceivedId(token, "m-1")
+        assertTrue(state.post(token, JsonPrimitive("late"), "m-1"))
+        assertEquals(listOf(JsonPrimitive("late")), state.drain(token))
+    }
+
+    @Test
+    fun `a cached depth is re-counted after a day, so rows that expired stop counting`() {
+        var now = System.currentTimeMillis()
+        val state = store(clock = { now })
+        val token = freshToken()
+        // Fill the queue with rows that expire in an hour. The TTL sweep never decrements the cache.
+        val expires = (now / 1000) + 3600
+        createDynamoDbClient("test", "test", "us-east-1", endpoint()).use { client ->
+            (0 until TEST_MAX_QUEUE_DEPTH).chunked(25).forEach { chunk ->
+                client.batchWriteItem { b ->
+                    b.requestItems(
+                        mapOf(
+                            "test_messages_${tableCounter - 1}" to
+                                chunk.map { i ->
+                                    WriteRequest.builder().putRequest { pr ->
+                                        pr.item(
+                                            mapOf(
+                                                "token" to AttributeValue.fromS(token),
+                                                "msgId" to AttributeValue.fromS("full-$i"),
+                                                "payload" to AttributeValue.fromS("\"x\""),
+                                                "postedAt" to AttributeValue.fromN((now + i).toString()),
+                                                "expiresAt" to AttributeValue.fromN(expires.toString()),
+                                            ),
+                                        )
+                                    }.build()
+                                },
+                        ),
+                    )
+                }
+            }
+        }
+        assertFalse(state.post(token, JsonPrimitive("over"), "over-1"), "full queue rejects")
+
+        now += 2 * 3600_000L // the rows have expired; the cached count hasn't noticed
+        assertFalse(state.post(token, JsonPrimitive("over"), "over-2"), "within a day the cache still counts them")
+
+        now += 24 * 3600_000L
+        assertTrue(state.post(token, JsonPrimitive("fresh"), "fresh-1"), "after a day the re-count drops them")
     }
 
     private fun rawItem(

@@ -57,6 +57,13 @@ internal const val MAX_SILENT_DROP_RETRIES = 5
 internal const val MAX_SKIPPED_KEYS = 1000
 internal const val MAX_KEY_AGE_MS = 604_800_000L // 7 days in milliseconds
 
+/**
+ * How long the mailbox server keeps an undelivered message (its TTL), and so the longest a device
+ * can be away without its friendships needing a re-pair: past it, a transition frame it never read
+ * has expired (spec §5.4.1, §10.2). Shared by the server and the client so they can't drift.
+ */
+const val MAILBOX_RETENTION_SECONDS = 90 * 24 * 3600L
+
 const val PROTOCOL_VERSION = 1
 
 /** How long an invite (QR or link) is valid for, from creation. Advertised to scanners as `expires_at`. */
