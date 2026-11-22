@@ -7,6 +7,8 @@ import androidx.annotation.VisibleForTesting
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import kotlinx.coroutines.CancellationException
+import net.af0.where.e2ee.FriendEntry
+import net.af0.where.e2ee.currentTimeSeconds
 
 class LocationServiceRestartWorker(
     context: Context,
@@ -16,7 +18,7 @@ class LocationServiceRestartWorker(
     internal var startService: (Intent) -> Unit = { applicationContext.startForegroundService(it) }
 
     @VisibleForTesting
-    internal var clock: () -> Long = { System.currentTimeMillis() }
+    internal var nowSeconds: () -> Long = { currentTimeSeconds() }
 
     override suspend fun doWork(): Result {
         val app = applicationContext as? WhereApplication ?: return Result.success()
@@ -41,7 +43,8 @@ class LocationServiceRestartWorker(
         // location permission), poll from here. When it does run, nudging it is enough - it polls
         // itself, and polling here too would double the background request rate.
         if (!applicationContext.needsBackgroundService(app.userStore)) {
-            pollThrottled(app)
+            Log.i(TAG, "LocationService not needed in background; polling directly")
+            pollThrottled(app, friends)
             return Result.success()
         }
         Log.i(TAG, "WorkManager heartbeat: ensuring LocationService is running + forcing tick")
@@ -57,39 +60,35 @@ class LocationServiceRestartWorker(
             // Typically ForegroundServiceStartNotAllowedException; must not fail the work, and the
             // service isn't going to poll, so do it here.
             Log.w(TAG, "Could not start LocationService from background (${e.message}); polling directly")
-            app.friendPoller.poll(WakeSource.HEARTBEAT)
+            pollThrottled(app, friends)
         }
         return Result.success()
     }
 
     /**
-     * Polls unless this worker polled less than [MAINTENANCE_POLL_INTERVAL_MS] ago, so the
-     * 15-min work period doesn't double the 30-min maintenance rate the paused service had.
+     * Polls unless some poll (service, foreground loop or worker) reached a friend less than
+     * [MAINTENANCE_POLL_INTERVAL_S] ago. With only pending invites, always polls.
      */
-    private suspend fun pollThrottled(app: WhereApplication) {
-        val prefs = applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val now = clock()
-        val last = prefs.getLong(KEY_LAST_POLL, 0L)
-        // A clock that went backwards doesn't hold polling off.
-        if (last in (now - MAINTENANCE_POLL_INTERVAL_MS + 1)..now) {
-            Log.i(TAG, "Polled ${(now - last) / 60_000} min ago; skipping")
+    private suspend fun pollThrottled(
+        app: WhereApplication,
+        friends: List<FriendEntry>,
+    ) {
+        val age = nowSeconds() - (friends.maxOfOrNull { it.lastPollTs } ?: 0L)
+        if (age in 0 until MAINTENANCE_POLL_INTERVAL_S) {
+            Log.i(TAG, "Polled ${age / 60} min ago; skipping")
             return
         }
-        Log.i(TAG, "LocationService not needed in background; polling directly")
-        prefs.edit().putLong(KEY_LAST_POLL, now).apply()
         app.friendPoller.poll(WakeSource.HEARTBEAT)
     }
 
     companion object {
         private const val TAG = "LocationServiceRestartWorker"
-        private const val PREFS = "where_prefs"
-        private const val KEY_LAST_POLL = "worker_last_poll_ms"
 
         /**
-         * Under 30 min on purpose: the 15-min work period jitters, and a run landing just short
-         * of 30 min would otherwise skip to 45.
+         * The ~30-min maintenance rate with sharing off. Under 30 min because the 15-min work
+         * period jitters, and a run landing just short of 30 would otherwise wait for 45.
          */
-        internal const val MAINTENANCE_POLL_INTERVAL_MS = 25 * 60 * 1000L
+        internal const val MAINTENANCE_POLL_INTERVAL_S = 25 * 60L
         const val WORK_NAME = "location_service_keepalive"
     }
 }

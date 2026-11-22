@@ -784,7 +784,6 @@ class LocationViewModel(
     ) {
         check(Looper.myLooper() == Looper.getMainLooper())
         val intent = Intent(getApplication(), LocationService::class.java)
-        val hasLocationPermission = getApplication<Application>().hasLocationPermission()
         val hasRelationships = friends.value.isNotEmpty() || locationSource.allPendingInvites.value.isNotEmpty()
         // While there's anyone to talk to, the worker keeps sessions alive whether or not the
         // service runs: in the background the service only runs while we share (#481). Also
@@ -803,7 +802,7 @@ class LocationViewModel(
         } catch (_: IllegalStateException) {
             Log.w(TAG, "WorkManager not available")
         }
-        if ((sharing && hasLocationPermission && hasRelationships) || inForeground) {
+        if ((getApplication<Application>().needsBackgroundService(userStore) && hasRelationships) || inForeground) {
             startLocationService(intent)
             if (sharing) {
                 val pm = getApplication<Application>().getSystemService(Context.POWER_SERVICE) as PowerManager

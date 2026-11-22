@@ -227,24 +227,7 @@ class LocationServiceTest {
     @Test
     fun testPollInterval_Background_Is5min() {
         val service = Robolectric.buildService(LocationService::class.java).get()
-        assertEquals(5 * 60 * 1000L, service.pollInterval(rapid = false, inForeground = false, isSharingLocation = true))
-    }
-
-    @Test
-    fun testPollInterval_BackgroundNotSharing_Is30min() {
-        val service = Robolectric.buildService(LocationService::class.java).get()
-        assertEquals(30 * 60 * 1000L, service.pollInterval(rapid = false, inForeground = false, isSharingLocation = false))
-    }
-
-    @Test
-    fun testPollInterval_Maintains30minDuringPause() {
-        val service = Robolectric.buildService(LocationService::class.java).get()
-        // When sharing is paused (isSharingLocation = false), we must use the 30-min interval.
-        assertEquals(
-            30 * 60 * 1000L,
-            service.pollInterval(rapid = false, inForeground = false, isSharingLocation = false),
-            "Maintenance interval must be 30 minutes when sharing is paused",
-        )
+        assertEquals(5 * 60 * 1000L, service.pollInterval(rapid = false, inForeground = false))
     }
 
     @Test
@@ -648,17 +631,21 @@ class LocationServiceTest {
             assertFalse(shadowOf(controller.get()).isStoppedBySelf, "visible: keeps polling")
             io.mockk.coVerify(atLeast = 1) { mockClient.poll(any(), any(), any()) }
 
-            // A brief trip out (QR scanner, permission dialog) doesn't stop it.
+            // A brief trip out (QR scanner, permission dialog) doesn't stop it, even when the
+            // loop wakes during it.
+            var now = 1_000_000L
+            LocationService.elapsedClock = { now }
             fakeLocationSource.setAppForeground(false)
-            advanceTimeBy(LocationService.BACKGROUND_STOP_GRACE_MS - 1)
-            fakeLocationSource.setAppForeground(true)
-            advanceTimeBy(LocationService.BACKGROUND_STOP_GRACE_MS * 2)
-            assertFalse(shadowOf(controller.get()).isStoppedBySelf, "back before the grace period ended")
+            fakeLocationSource.wakePoll()
+            advanceUntilIdle()
+            now += LocationService.BACKGROUND_STOP_GRACE_MS - 1
+            fakeLocationSource.wakePoll()
+            advanceUntilIdle()
+            assertFalse(shadowOf(controller.get()).isStoppedBySelf, "still within the grace period")
 
-            // No wakePoll() from the test: backgrounding alone must end it, not the next
-            // 30-min timer.
-            fakeLocationSource.setAppForeground(false)
-            advanceTimeBy(LocationService.BACKGROUND_STOP_GRACE_MS + 1)
+            now += 1
+            fakeLocationSource.wakePoll()
+            advanceUntilIdle()
             assertTrue(shadowOf(controller.get()).isStoppedBySelf)
         }
 

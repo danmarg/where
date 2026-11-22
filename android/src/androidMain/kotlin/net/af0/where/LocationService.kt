@@ -28,9 +28,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.E2eeManager
@@ -177,6 +174,12 @@ class LocationService : Service() {
 
     // The poll loop's last view of the foreground, to spot the app leaving it.
     private var wasInForeground = false
+
+    // [elapsedClock] time pollLoop saw the app go to the background; 0 if it never saw it visible.
+    private var backgroundedAt = 0L
+
+    // [elapsedClock] time the network callback was registered; see its onAvailable.
+    private var networkCallbackRegisteredAt = 0L
 
     @VisibleForTesting
     internal var consecutiveLateHeartbeats = 0
@@ -338,6 +341,9 @@ class LocationService : Service() {
         networkCallback =
             object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
+                    // Registering reports the current network straight away, as the first
+                    // pollLoop iteration polls anyway; only a network that comes up later syncs.
+                    if (elapsedClock() - networkCallbackRegisteredAt < INITIAL_NETWORK_CALLBACK_MS) return
                     Log.d(TAG, "Network available, triggering syncNow()")
                     networkWakeLock.acquire(WAKE_LOCK_TIMEOUT_MS)
                     serviceScope.launch {
@@ -363,6 +369,7 @@ class LocationService : Service() {
                     }
                 }
             }
+        networkCallbackRegisteredAt = elapsedClock()
         connectivityManager?.registerDefaultNetworkCallback(networkCallback!!)
 
         // MapScreen.kt registers an equivalent PROVIDERS_CHANGED_ACTION receiver to gate its own
@@ -395,16 +402,6 @@ class LocationService : Service() {
                 if (!it) sendScheduler.reset()
                 updateNotification()
                 ensureLocationRegistration()
-            }
-        }
-        serviceScope.launch {
-            // Backgrounding while not sharing: wake the loop so it stops soon, not after the
-            // current interval (up to 30 min with the notification still up). After a grace
-            // period: the QR scanner and permission dialogs also background us briefly.
-            locationSource.isAppInForeground.drop(1).collectLatest { inForeground ->
-                if (inForeground) return@collectLatest
-                delay(BACKGROUND_STOP_GRACE_MS)
-                if (!needsBackgroundService(userStore)) locationSource.wakePoll()
             }
         }
         serviceScope.launch {
@@ -835,10 +832,14 @@ class LocationService : Service() {
                 stopSelf()
                 return
             }
+            if (wasInForeground && !inForeground) backgroundedAt = elapsedClock()
             // Not sharing and not visible: nothing left here needs a foreground service. The
             // worker keeps up acks and keepalives without the notification (#481); opening the
-            // app or turning sharing on starts the service again.
-            if (!inForeground && !rapid && !needsBackgroundService(userStore)) {
+            // app or turning sharing on starts the service again. Not straight after the app
+            // leaves the screen: the QR scanner and permission dialogs do that briefly.
+            val stopGraceLeft = backgroundedAt + BACKGROUND_STOP_GRACE_MS - elapsedClock()
+            val idle = !inForeground && !rapid && !needsBackgroundService(userStore)
+            if (idle && stopGraceLeft <= 0) {
                 Log.i(TAG, "Not sharing and in background; stopping service (worker keeps sessions alive).")
                 e2eeManager.addDiagnosticEvent("Service stopped: not sharing in background")
                 stopSelf()
@@ -865,10 +866,8 @@ class LocationService : Service() {
             wasInForeground = inForeground
             maintainStationary(inForeground)
             if (!inForeground) enterStationaryIfIdle(elapsedClock())
-            // Always poll — even when sharing is off we need to process incoming
-            // EpochRotations and post Ratchet Acks so Alice's location doesn't get
-            // stuck. With sharing off this only runs while the app is visible or pairing;
-            // in the background LocationServiceRestartWorker does it.
+            // Poll even with sharing off: incoming EpochRotations and Ratchet Acks keep peers'
+            // sessions moving (in the background with sharing off, the worker does this).
             doPoll(source)
             // Heartbeat: ensure we send at least once every 5 minutes when stationary.
             // Runs regardless of foreground state so background location stays alive. Only when
@@ -928,7 +927,7 @@ class LocationService : Service() {
                     sendScheduler.noteKeepalive(sent)
                 }
             }
-            val interval = pollInterval(rapid, inForeground, isSharing)
+            val interval = if (idle) minOf(pollInterval(rapid, inForeground), stopGraceLeft) else pollInterval(rapid, inForeground)
             // Schedule the doze alarm above the platform's ~9-min minimum for
             // setExactAndAllowWhileIdle. Scheduling below that causes silent deferral to the
             // next maintenance window — often hours on Samsung in deep Doze.
@@ -1155,13 +1154,13 @@ class LocationService : Service() {
     internal fun pollInterval(
         rapid: Boolean,
         inForeground: Boolean,
-        isSharingLocation: Boolean = true,
     ): Long =
         when {
             rapid -> FriendPoller.RAPID_POLL_INTERVAL_MS
             inForeground -> FriendPoller.FOREGROUND_POLL_INTERVAL_MS
-            isSharingLocation -> 5 * 60 * 1000L // heartbeat + friend poll
-            else -> 30 * 60 * 1000L // maintenance-only (Ratchet keepalives and Acks). Required for DH sync during global pause.
+            // Heartbeat + friend poll. Not sharing in the background, the service stops and the
+            // worker polls instead (LocationServiceRestartWorker.MAINTENANCE_POLL_INTERVAL_S).
+            else -> 5 * 60 * 1000L
         }
 
     private val friendPoller: FriendPoller by lazy {
@@ -1281,8 +1280,10 @@ class LocationService : Service() {
     companion object {
         const val ACTION_POLL_ALARM = "net.af0.where.ACTION_POLL_ALARM"
 
-        /** How long after backgrounding a service with nothing to send stops; see onCreate. */
+        /** How long after backgrounding a service with nothing to send stops; see pollLoop. */
         internal const val BACKGROUND_STOP_GRACE_MS = 30_000L
+
+        private const val INITIAL_NETWORK_CALLBACK_MS = 5_000L
         const val ACTION_FORCE_PUBLISH = "net.af0.where.ACTION_FORCE_PUBLISH"
         const val ACTION_GEOFENCE_EVENT = "net.af0.where.ACTION_GEOFENCE_EVENT"
         const val ACTION_HEARTBEAT_TICK = "net.af0.where.ACTION_HEARTBEAT_TICK"

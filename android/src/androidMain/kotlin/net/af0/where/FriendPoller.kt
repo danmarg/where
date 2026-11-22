@@ -25,18 +25,14 @@ internal fun Context.hasLocationPermission(): Boolean =
 
 /**
  * Whether [LocationService] can actually run. On API 34+ the OS refuses a `location` foreground
- * service without the permission, so it self-stops; before that it stays alive regardless
- * (maintenance polling while sharing is paused), so the service is already polling.
+ * service without the permission, so it self-stops; before that it runs without it.
  */
 internal fun Context.canRunLocationService(): Boolean =
     hasLocationPermission() || Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE
 
 /**
- * Whether [LocationService] has background work: sending our location. Receiving and ratchet
- * maintenance alone (acks, keepalives) don't need a foreground service and its notification;
- * sharing without permission keeps it where it can run (before API 34) for its warning.
- * [LocationServiceRestartWorker] polls for them instead (#481). The service still runs while the
- * app is visible or a pairing is in progress.
+ * Whether [LocationService] runs in the background: only while we share (where it can run, for
+ * its warning when permission is missing). Otherwise [LocationServiceRestartWorker] polls (#481).
  */
 internal fun Context.needsBackgroundService(userStore: UserStore): Boolean = userStore.isSharingLocation.value && canRunLocationService()
 
@@ -55,9 +51,8 @@ internal class PollGate {
 /**
  * One friend/invite poll cycle: fetch friend updates, surface incoming pairing handshakes, and
  * refresh the UI state. Independent of [LocationService] so it can also run where the
- * foreground service can't (no location permission): from the app's foreground loop and from
- * [LocationServiceRestartWorker]. Without it, pairing and ratchet maintenance would not happen
- * at all for a user who hasn't granted location permission.
+ * foreground service doesn't: from the app's foreground loop (no location permission) and from
+ * [LocationServiceRestartWorker] (not sharing, or no permission).
  *
  * Cycles are serialized through a shared [PollGate] so the service, the worker and the foreground
  * loop can overlap without surfacing the same handshake twice.
