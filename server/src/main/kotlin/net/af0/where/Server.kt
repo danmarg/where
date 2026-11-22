@@ -96,6 +96,18 @@ private const val MAILBOX_TTL_MS = MAILBOX_RETENTION_SECONDS * 1000L
  */
 private const val RECEIVED_IDS_TTL_MS = 7 * 24 * 60 * 60 * 1000L
 
+/**
+ * How long an unread KeyExchangeInit is kept. It only matters while its invite is valid (48 h),
+ * so there's no reason to hold a scanner's key and name for [MAILBOX_TTL_MS].
+ */
+private const val KEY_EXCHANGE_INIT_TTL_MS = 7 * 24 * 60 * 60 * 1000L
+
+/** The TTL for [payload]: a session frame is kept for the retention, a pairing message shorter. */
+private fun messageTtlMs(payload: JsonElement): Long {
+    val type = ((payload as? JsonObject)?.get("type") as? JsonPrimitive)?.content
+    return if (type == "KeyExchangeInit") KEY_EXCHANGE_INIT_TTL_MS else MAILBOX_TTL_MS
+}
+
 /** Maximum messages retained per token. Prevents unbounded memory growth from floods. */
 private const val MAX_QUEUE_DEPTH = 10000
 
@@ -293,7 +305,7 @@ class InMemoryMailboxState(
             val alreadyQueued = msgId != null && queue.any { it.msgId == msgId }
             if (!alreadyQueued) {
                 if (queue.size >= MAX_QUEUE_DEPTH) return false
-                queue.add(MailboxEntry(payload, now + MAILBOX_TTL_MS, msgId))
+                queue.add(MailboxEntry(payload, now + messageTtlMs(payload), msgId))
             }
             if (msgId != null) {
                 val ids = receivedIds.getOrPut(token) { LinkedHashMap() }
@@ -348,10 +360,11 @@ class InMemoryMailboxState(
 
         receivedIds.forEach { (token, ids) ->
             synchronized(getLock(token)) {
-                ids.values.removeIf { it <= now }
-                val oldestFirst = ids.keys.iterator()
-                while (ids.size > MAX_QUEUE_DEPTH) {
-                    oldestFirst.next()
+                // Oldest first, so expired records are a prefix, then the size cap trims from the front.
+                val oldestFirst = ids.entries.iterator()
+                while (oldestFirst.hasNext()) {
+                    val (_, expiresAt) = oldestFirst.next()
+                    if (expiresAt > now && ids.size <= MAX_QUEUE_DEPTH) break
                     oldestFirst.remove()
                 }
                 if (ids.isEmpty()) receivedIds.remove(token)
@@ -622,7 +635,7 @@ class DynamoMailboxState(
         if (!limiter.checkPost(token)) return false
         synchronized(getLock(token)) {
             val now = clock()
-            val expiresAt = (now + MAILBOX_TTL_MS) / 1000
+            val expiresAt = (now + messageTtlMs(payload)) / 1000
             val receivedIdExpiresAt = (now + RECEIVED_IDS_TTL_MS) / 1000
 
             if (msgId != null) {
@@ -799,6 +812,9 @@ class DynamoMailboxState(
         return count
     }
 
+    private fun isLive(item: Map<String, AttributeValue>): Boolean =
+        (item["expiresAt"]?.n()?.toLongOrNull() ?: Long.MAX_VALUE) > clock() / 1000
+
     // Must be called while holding getLock(token) - see currentDepth()'s doc.
     private fun decrementDepth(
         token: String,
@@ -880,7 +896,8 @@ class DynamoMailboxState(
                         .returnValues(ReturnValue.ALL_OLD)
                         .build(),
                 )
-            if (response.hasAttributes()) decrementDepth(token, 1)
+            // Only a row still live was counted (currentDepth's re-count skips expired ones).
+            if (response.hasAttributes() && isLive(response.attributes())) decrementDepth(token, 1)
         }
         return true
     }
@@ -915,14 +932,14 @@ class DynamoMailboxState(
                                         messagesTable to
                                             KeysAndAttributes.builder()
                                                 .keys(keysToCheck)
-                                                .projectionExpression("msgId")
+                                                .projectionExpression("msgId, expiresAt")
                                                 .consistentRead(true)
                                                 .build(),
                                     ),
                                 )
                                 .build(),
                         )
-                    existingCount += response.responses()[messagesTable]?.size ?: 0
+                    existingCount += response.responses()[messagesTable]?.count { isLive(it) } ?: 0
                     keysToCheck = response.unprocessedKeys()[messagesTable]?.keys() ?: emptyList()
                 }
             }

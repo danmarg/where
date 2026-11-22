@@ -367,6 +367,40 @@ class LongAbsenceTest {
         }
 
     @Test
+    fun aStopWhileTheFriendIsPausedStillReachesThem() =
+        runTest {
+            // Bob's app stops; on day 9 (Bob already paused) Alice stops sharing. Bob comes back on
+            // day 10 and must see her as stopped, not her last pin from before the pause as current.
+            val p = pair(TtlMailboxClient(MAILBOX_RETENTION_SECONDS))
+            p.warmUp(clock)
+            val until = currentTimeSeconds() + 9 * 86400
+            while (currentTimeSeconds() < until) {
+                p.alice.poll(isForeground = false)
+                p.alice.share(1.0)
+                clock.advanceSeconds(if (p.aliceView().isStale) 3600 else 300)
+            }
+            assertTrue(p.aliceView().isStale)
+            p.alice.sendStoppedSharing()
+            clock.advanceSeconds(86400)
+            repeat(8) { p.bob.poll() } // ~2,000 waiting frames at 500 per poll; the stop is last
+            assertTrue(p.bobView().stoppedAtTs != null, "Bob sees that Alice stopped")
+        }
+
+    @Test
+    fun noPartingKeepalivePastRetention() =
+        runTest {
+            // Alice's app is off for longer than the retention: the friendship is past saving, so
+            // her return doesn't spend a write on it.
+            val mailbox = TtlMailboxClient(MAILBOX_RETENTION_SECONDS)
+            val p = pair(mailbox)
+            p.warmUp(clock, rounds = 1)
+            clock.advanceSeconds(MAILBOX_RETENTION_SECONDS + 86400)
+            val back = currentTimeSeconds()
+            p.alice.poll(isForeground = false, sharingEnabled = false)
+            assertEquals(0, mailbox.postTimes.count { it >= back })
+        }
+
+    @Test
     fun breaksWellPastRetention() =
         runTest {
             val days = retentionDays + 10

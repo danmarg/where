@@ -48,8 +48,10 @@ open class LocationClient(
 
     private val service = MailboxService(baseUrl, mailbox)
 
-    // Shared by sendLocation(), sendStoppedSharing(), and sendRecoveryKeepalives() - a friend is
-    // eligible for any outbound traffic unless individually paused or stale.
+    // Shared by sendLocation() and sendRecoveryKeepalives() - a friend is eligible for routine
+    // outbound traffic unless individually paused or stale. Stops ignore staleness: a friend we
+    // paused can still come back (within MAILBOX_RETENTION_SECONDS) and read our earlier
+    // Locations, so they must find the stop after them too.
     private fun isActiveFriend(
         friend: FriendEntry,
         pausedFriendIds: Set<String>,
@@ -313,8 +315,7 @@ open class LocationClient(
     // A stop call still running for them will queue it itself, so it isn't sent twice.
     private suspend fun retryOwedStopLocked(friendId: String) {
         if (!sharingOrderMutex.withLock { friendId in owedStops && friendId !in stopsInFlight }) return
-        val friend = store.getFriend(friendId) ?: return
-        if (friend.isStale) return
+        store.getFriend(friendId) ?: return
         try {
             sendMessageToFriendInternal(
                 friendId,
@@ -553,8 +554,11 @@ open class LocationClient(
                 // Parting keepalive: a friend we've paused gets one frame dated after the pause, so
                 // two friends both away across it don't each find nothing and never send again
                 // (spec §13 item 4, docs/long-absence-recovery.md).
+                // Not past retention: by then the session can't recover, and a dead friendship
+                // (e.g. every already-stale friend on upgrade) would get a write for nothing.
                 val owedPartingKeepalive =
-                    stale && friendAfter.lastSentTs < friendAfter.lastRecvTs + FriendEntry.INACTIVITY_PAUSE_SECONDS
+                    stale && friendAfter.lastSentTs < friendAfter.lastRecvTs + FriendEntry.INACTIVITY_PAUSE_SECONDS &&
+                        now - friendAfter.lastRecvTs < MAILBOX_RETENTION_SECONDS
 
                 // Check outbox to avoid redundant keepalives.
                 val dueForAutomatedKeepalive =
@@ -640,7 +644,7 @@ open class LocationClient(
             // the receiver lets a Location win a same-second tie (as for a resume right after a
             // pause), and a stuck Location from this second may arrive in the same batch.
             val farewell =
-                if ((sharingEnabled && isActiveFriend(friend, pausedFriendIds)) || (stopOwed && !friend.isStale)) {
+                if ((sharingEnabled && friend.id !in pausedFriendIds) || stopOwed) {
                     MessagePlaintext.StoppedSharing(ts = maxOf(currentTimeSeconds(), friend.lastSentTs + 1))
                 } else {
                     null
@@ -866,7 +870,7 @@ open class LocationClient(
         // issued (dropping Locations decided before it) and owed to each friend, or neither.
         val activeFriends =
             withContext(NonCancellable) {
-                store.listFriends().filter { isActiveFriend(it, pausedFriendIds) }.also { friends ->
+                store.listFriends().filter { it.id !in pausedFriendIds }.also { friends ->
                     issueStop(null, owedTo = friends.map { it.id })
                 }
             }

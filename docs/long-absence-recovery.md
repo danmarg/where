@@ -34,8 +34,9 @@ What a user sees, by time since the last frame from a friend:
 ## Why sessions break today
 
 Let Bob be away and Alice online. If nothing expired, Bob would come back, read Alice's backlog
-in order and carry on. The client's 7-day pause (`FriendEntry.isStale`, `ACK_TIMEOUT_SECONDS`)
-caps that backlog at ~2,000 frames, under the server's `MAX_QUEUE_DEPTH` (10,000) and fine for
+in order and carry on. The client's 7-day pause (`FriendEntry.isStale`, `INACTIVITY_PAUSE_SECONDS`)
+caps that backlog at ~2,000 frames (sends to an unresponsive friend are throttled to one per 5 min
+whatever the movement, `UNRESPONSIVE_SEND_INTERVAL_SECONDS`), under the server's `MAX_QUEUE_DEPTH` (10,000) and fine for
 `MAX_MESSAGES_PER_POLL`. It deletes nothing: the friend is still polled and the flag clears on
 the next frame. So the survivable absence equals server message retention. Expiry shows up three
 ways:
@@ -128,8 +129,8 @@ stored, i.e. from Bob's processing, not from Alice's send (`Session.kt:116`).
 
 ### 3. The 7-day pause (unchanged)
 
-Keep `ACK_TIMEOUT_SECONDS` = 7 days and `isStale` as they are: no Locations, StoppedSharing or
-keepalives to an inactive friend, still polled, the flag clears on the next frame, "Friend
+Keep the 7-day pause and `isStale` as they are (`ACK_TIMEOUT_SECONDS`, now `INACTIVITY_PAUSE_SECONDS`): no Locations or regular
+keepalives to an inactive friend (stops still go, see below), still polled, the flag clears on the next frame, "Friend
 inactive — sharing paused" in the UI. Rename the constant to `INACTIVITY_PAUSE_SECONDS` so it
 isn't confused with retention. It doesn't block recovery within retention: Alice's frames from
 before her pause stay on the server until about day 97, so a Bob back by day 90 reads them,
@@ -144,7 +145,11 @@ went stale (`lastSentTs < lastRecvTs + INACTIVITY_PAUSE_SECONDS`, in `pollFriend
 that was running sends it just after the pause (or not at all, if its last regular send already
 landed on the pause point); one that was away sends it on its first poll back. Either way the
 friend finds a frame from us dated at or after the pause, and it lives a full retention. Cost:
-one frame per pause. An older client doesn't do this, so a both-away pair with an old client
+one frame per pause, and none once a friend has been silent for longer than the retention (the
+session is past saving by then; this also keeps an upgrade from writing to every long-dead
+friendship). Stops (StoppedSharing, the farewell on removal) ignore the pause: a paused friend
+can still come back and read our earlier Locations, so they must find the stop after them. An
+older client doesn't do this, so a both-away pair with an old client
 that comes back first can still deadlock.
 
 ### 4. Optional: less traffic to a quiet friend, quick resume

@@ -917,6 +917,16 @@ class DynamoMailboxStateTest {
     }
 
     @Test
+    fun `an unread pairing message is kept 7 days, not the whole retention`() {
+        val now = 1_800_000_000_000L
+        val state = store(clock = { now })
+        val token = freshToken()
+        val init = kotlinx.serialization.json.buildJsonObject { put("type", JsonPrimitive("KeyExchangeInit")) }
+        assertTrue(state.post(token, init, "init-1"))
+        assertEquals((now / 1000) + 7 * 86_400, rawItem(token, "init-1").getValue("expiresAt").n().toLong())
+    }
+
+    @Test
     fun `a retry of a still-queued message is not queued twice once its dedup record is gone`() {
         val state = store()
         val token = freshToken()
