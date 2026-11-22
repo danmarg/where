@@ -4,7 +4,8 @@
 # keep its friend and session. Then, on the upgraded app: sends and a pairing made during a server
 # outage go through once it's back; it recovers from its process being killed, from deep Doze
 # (without a battery exemption) and from a reboot without being opened (unless E2E_QUICK); opening an accepted
-# invite again doesn't pair twice; pausing stops location updates and sends; backup is refused;
+# invite again doesn't pair twice; pausing stops location updates and sends, and in the background
+# also the foreground service and its notification, with the worker still receiving; backup is refused;
 # per-friend pause and friend removal affect only that friend; with location permission revoked
 # nothing is sent, and sharing resumes once it's granted again.
 #
@@ -397,13 +398,53 @@ maestro_flow android/invite-already-used.yaml
 friend_count_is 2 || fail "re-opening an invite accepted before the upgrade paired again"
 echo "✓ Accepted invites rejected on replay, including one accepted before the upgrade"
 
-# The foreground service itself stays up while paused, by design; location updates stop.
+# The foreground service stays up while paused only while the app is visible; location updates stop.
 log "Pausing stops location updates and sending"
 retry 30 location_listening || fail "the app isn't listening for location while sharing"
 maestro_flow android/pause.yaml
 retry 30 location_not_listening || fail "the app still listens for location after pausing"
 assert_no_sends_while_paused
 echo "✓ Pause stops location updates and sending"
+
+# #481: paused and in the background, there's no foreground service (or its notification); the
+# WorkManager worker polls instead, so a friend's messages still get through and are acked.
+log "Paused in the background: no foreground service; the worker keeps the session alive"
+service_running() { adb shell dumpsys activity services "$PKG" | grep -q "LocationService"; }
+service_stopped() { ! service_running; }
+sharing_notification_shown() {
+  adb shell dumpsys notification --noredact | tr -d '\r' | grep -A2 "NotificationRecord(.*pkg=$PKG " |
+    grep -q "channel=where_location"
+}
+# run_worker: runs the app's WorkManager jobs now, past their schedule and constraints.
+run_worker() {
+  local id ids
+  ids=$(adb shell dumpsys jobscheduler | tr -d '\r' |
+    sed -nE "s|.*JOB #[^/]+/([0-9]+): [0-9a-f]+ $PKG/androidx\.work\..*|\1|p" | sort -u)
+  [ -n "$ids" ] || fail "no WorkManager job scheduled for $PKG"
+  for id in $ids; do
+    adb shell cmd jobscheduler run -f "$PKG" "$id" >/dev/null
+  done
+}
+last_recv() { app_query "SELECT max(lastRecvTs) FROM Friends"; }
+recv_after() { [ "$(last_recv)" -gt "$1" ]; }
+retry 30 service_running || fail "LocationService isn't running while the app is visible"
+adb shell input keyevent KEYCODE_HOME
+retry 120 service_stopped || fail "LocationService still runs 2 min after leaving the app while paused"
+! sharing_notification_shown || fail "the sharing notification is still shown while paused in the background"
+RECV_BEFORE=$(last_recv)
+sleep 2 # lastRecvTs is in seconds
+cli alice keepalive >/dev/null
+# The worker polls at most every ~25 min; clear its last-poll time so this run polls. Kill the
+# process first so it doesn't keep the old value in memory, and rewrite the file in place
+# (cat >) so it keeps the app's ownership.
+P=$(app_pid)
+[ -z "$P" ] || adb shell su 0 kill -9 "$P"
+adb shell su 0 sh -c "'f=/data/data/$PKG/shared_prefs/where_prefs.xml; grep -v worker_last_poll_ms \$f > /data/local/tmp/wp.xml && cat /data/local/tmp/wp.xml > \$f; rm -f /data/local/tmp/wp.xml'"
+run_worker
+retry 60 recv_after "$RECV_BEFORE" || fail "the worker didn't receive the friend's keepalive while paused in the background"
+service_stopped || fail "the worker started LocationService while paused"
+! sharing_notification_shown || fail "the worker brought the sharing notification back"
+echo "✓ Paused in the background: no service or notification, and the worker keeps the session going"
 
 log "Backup is refused"
 ! adb shell dumpsys package "$PKG" | grep -E "^ +pkgFlags=" | grep -q ALLOW_BACKUP ||
