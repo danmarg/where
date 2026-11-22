@@ -30,6 +30,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import net.af0.where.e2ee.EncryptedMessagePayload
 import net.af0.where.e2ee.MAILBOX_RETENTION_SECONDS
 import org.slf4j.LoggerFactory
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
@@ -97,15 +98,19 @@ private const val MAILBOX_TTL_MS = MAILBOX_RETENTION_SECONDS * 1000L
 private const val RECEIVED_IDS_TTL_MS = 7 * 24 * 60 * 60 * 1000L
 
 /**
- * How long an unread KeyExchangeInit is kept. It only matters while its invite is valid (48 h),
- * so there's no reason to hold a scanner's key and name for [MAILBOX_TTL_MS].
+ * How long an unread message other than a session frame is kept. A KeyExchangeInit only matters
+ * while its invite is valid (48 h), so there's no reason to hold a scanner's key and name for
+ * [MAILBOX_TTL_MS]; any other type (or junk) gets no more than that either.
  */
-private const val KEY_EXCHANGE_INIT_TTL_MS = 7 * 24 * 60 * 60 * 1000L
+private const val SHORT_MESSAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000L
 
-/** The TTL for [payload]: a session frame is kept for the retention, a pairing message shorter. */
+/** The wire `type` of a session frame, the only payload kept for [MAILBOX_TTL_MS]. */
+private val SESSION_FRAME_TYPE = EncryptedMessagePayload.serializer().descriptor.serialName
+
+/** The TTL for [payload]: a session frame is kept for the retention, anything else shorter. */
 private fun messageTtlMs(payload: JsonElement): Long {
     val type = ((payload as? JsonObject)?.get("type") as? JsonPrimitive)?.content
-    return if (type == "KeyExchangeInit") KEY_EXCHANGE_INIT_TTL_MS else MAILBOX_TTL_MS
+    return if (type == SESSION_FRAME_TYPE) MAILBOX_TTL_MS else SHORT_MESSAGE_TTL_MS
 }
 
 /** Maximum messages retained per token. Prevents unbounded memory growth from floods. */

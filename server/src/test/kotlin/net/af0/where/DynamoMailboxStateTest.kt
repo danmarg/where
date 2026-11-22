@@ -10,6 +10,7 @@ import io.ktor.http.contentType
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.jsonArray
 import net.af0.where.e2ee.DhPublicKey
 import net.af0.where.e2ee.EncryptedMessagePayload
@@ -909,7 +910,8 @@ class DynamoMailboxStateTest {
         val now = 1_800_000_000_000L
         val state = store(clock = { now })
         val token = freshToken()
-        assertTrue(state.post(token, JsonPrimitive("m"), "m-1"))
+        val frame = EncryptedMessagePayload(envelope = ByteArray(4), ct = ByteArray(4), msgId = "m-1")
+        assertTrue(state.post(token, wireJson.encodeToJsonElement<MailboxPayload>(frame), "m-1"))
 
         fun expiresAt(table: String) = rawItem(token, "m-1", table).getValue("expiresAt").n().toLong()
         assertEquals((now / 1000) + net.af0.where.e2ee.MAILBOX_RETENTION_SECONDS, expiresAt("test_messages"))
@@ -924,6 +926,18 @@ class DynamoMailboxStateTest {
         val init = kotlinx.serialization.json.buildJsonObject { put("type", JsonPrimitive("KeyExchangeInit")) }
         assertTrue(state.post(token, init, "init-1"))
         assertEquals((now / 1000) + 7 * 86_400, rawItem(token, "init-1").getValue("expiresAt").n().toLong())
+    }
+
+    @Test
+    fun `an unread payload of any other type is kept 7 days, not the whole retention`() {
+        val now = 1_800_000_000_000L
+        val state = store(clock = { now })
+        val token = freshToken()
+        val junk = kotlinx.serialization.json.buildJsonObject { put("type", JsonPrimitive("x")) }
+        assertTrue(state.post(token, junk, "junk-1"))
+        assertTrue(state.post(token, JsonPrimitive("m"), "junk-2"))
+        assertEquals((now / 1000) + 7 * 86_400, rawItem(token, "junk-1").getValue("expiresAt").n().toLong())
+        assertEquals((now / 1000) + 7 * 86_400, rawItem(token, "junk-2").getValue("expiresAt").n().toLong())
     }
 
     @Test
