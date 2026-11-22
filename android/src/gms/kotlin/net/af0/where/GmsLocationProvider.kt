@@ -203,7 +203,7 @@ class GmsLocationProvider : LocationProvider {
             geofenceRequestInFlight = true
             geofencingClient.addGeofences(request, getGeofencePendingIntent())
                 .addOnSuccessListener {
-                    Log.i(TAG, "Geofence registered at $lat, $lng")
+                    Log.i(TAG, "Geofence registered")
                     onGeofenceRequestSettled()
                 }
                 .addOnFailureListener { e ->

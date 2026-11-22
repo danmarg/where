@@ -601,7 +601,7 @@ class LocationService : Service() {
         when (result) {
             GeofenceRequestResult.SUBMITTED -> {
                 // GMS: request submitted; actual confirmation logged by provider's Task listener.
-                Log.d(TAG, "Stationary: Geofence submitted at $lat, $lng")
+                Log.d(TAG, "Stationary: Geofence submitted")
                 e2eeManager.addDiagnosticEvent("Stationary: Geofence submitted")
             }
             GeofenceRequestResult.QUEUED -> {
@@ -609,7 +609,7 @@ class LocationService : Service() {
                 // submit once that settles (GmsLocationProvider). Logged distinctly from
                 // SUBMITTED so a diagnostics read of the event log doesn't claim this target
                 // was sent to GMS before it actually was.
-                Log.d(TAG, "Stationary: Geofence queued at $lat, $lng (prior request in flight)")
+                Log.d(TAG, "Stationary: Geofence queued (prior request in flight)")
                 e2eeManager.addDiagnosticEvent("Stationary: Geofence queued")
             }
             GeofenceRequestResult.FAILED -> {
@@ -1217,7 +1217,7 @@ class LocationService : Service() {
         return try {
             val loc = locationProvider.getCurrentLocation(timeoutMs)
             if (loc != null) {
-                Log.d(TAG, "Forced location fix successful: ${loc.latitude}, ${loc.longitude}")
+                Log.d(TAG, "Forced location fix successful (accuracy=${loc.accuracy}m)")
                 ForcedFix(loc, fresh = true)
             } else {
                 Log.d(TAG, "Forced location fix timed out or returned null; falling back to last known location")
