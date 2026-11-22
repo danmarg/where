@@ -178,8 +178,8 @@ class LocationService : Service() {
     // [elapsedClock] time pollLoop saw the app go to the background; 0 if it never saw it visible.
     private var backgroundedAt = 0L
 
-    // [elapsedClock] time the network callback was registered; see its onAvailable.
-    private var networkCallbackRegisteredAt = 0L
+    // The network callback's sync in flight; the idle stop waits for it rather than cancel it.
+    private var networkSyncJob: Job? = null
 
     @VisibleForTesting
     internal var consecutiveLateHeartbeats = 0
@@ -341,35 +341,32 @@ class LocationService : Service() {
         networkCallback =
             object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
-                    // Registering reports the current network straight away, as the first
-                    // pollLoop iteration polls anyway; only a network that comes up later syncs.
-                    if (elapsedClock() - networkCallbackRegisteredAt < INITIAL_NETWORK_CALLBACK_MS) return
                     Log.d(TAG, "Network available, triggering syncNow()")
                     networkWakeLock.acquire(WAKE_LOCK_TIMEOUT_MS)
-                    serviceScope.launch {
-                        // A location send backing off after failures may retry now.
-                        sendScheduler.onNetworkRestored()
-                        try {
+                    networkSyncJob =
+                        serviceScope.launch {
+                            // A location send backing off after failures may retry now.
+                            sendScheduler.onNetworkRestored()
                             try {
-                                locationClient.syncNow(
-                                    pausedFriendIds = userStore.effectivelyPausedIds(),
-                                    // As FriendPoller's poll: without permission we send nothing,
-                                    // so stops still owed are retried.
-                                    sharingEnabled = canSendLocations(),
-                                )
-                                logReliability(WakeSource.NETWORK, true)
-                            } catch (e: CancellationException) {
-                                throw e
-                            } catch (_: Exception) {
-                                logReliability(WakeSource.NETWORK, false)
+                                try {
+                                    locationClient.syncNow(
+                                        pausedFriendIds = userStore.effectivelyPausedIds(),
+                                        // As FriendPoller's poll: without permission we send nothing,
+                                        // so stops still owed are retried.
+                                        sharingEnabled = canSendLocations(),
+                                    )
+                                    logReliability(WakeSource.NETWORK, true)
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (_: Exception) {
+                                    logReliability(WakeSource.NETWORK, false)
+                                }
+                            } finally {
+                                if (networkWakeLock.isHeld) networkWakeLock.release()
                             }
-                        } finally {
-                            if (networkWakeLock.isHeld) networkWakeLock.release()
                         }
-                    }
                 }
             }
-        networkCallbackRegisteredAt = elapsedClock()
         connectivityManager?.registerDefaultNetworkCallback(networkCallback!!)
 
         // MapScreen.kt registers an equivalent PROVIDERS_CHANGED_ACTION receiver to gate its own
@@ -832,7 +829,8 @@ class LocationService : Service() {
                 stopSelf()
                 return
             }
-            if (wasInForeground && !inForeground) backgroundedAt = elapsedClock()
+            val justBackgrounded = wasInForeground && !inForeground
+            if (justBackgrounded) backgroundedAt = elapsedClock()
             // Not sharing and not visible: nothing left here needs a foreground service. The
             // worker keeps up acks and keepalives without the notification (#481); opening the
             // app or turning sharing on starts the service again. Not straight after the app
@@ -842,6 +840,8 @@ class LocationService : Service() {
             if (idle && stopGraceLeft <= 0) {
                 Log.i(TAG, "Not sharing and in background; stopping service (worker keeps sessions alive).")
                 e2eeManager.addDiagnosticEvent("Service stopped: not sharing in background")
+                // onDestroy cancels serviceScope: let a reconnect's acks and outbox flush finish.
+                networkSyncJob?.join()
                 stopSelf()
                 return
             }
@@ -862,7 +862,7 @@ class LocationService : Service() {
                 }
             }
             endHighAccuracyIfIdle(elapsedClock())
-            if (wasInForeground && !inForeground) stationary.backgrounded(elapsedClock())
+            if (justBackgrounded) stationary.backgrounded(elapsedClock())
             wasInForeground = inForeground
             maintainStationary(inForeground)
             if (!inForeground) enterStationaryIfIdle(elapsedClock())
@@ -934,7 +934,9 @@ class LocationService : Service() {
             // During rapid polling (key exchange) keep the tight interval for responsiveness.
             // FLP callbacks and the poll timer drive the finer-grained heartbeat while the
             // foreground service is alive; the alarm is the dead-service safety net.
-            scheduleDozeAlarm(if (rapid) interval else maxOf(DOZE_ALARM_INTERVAL_MS, interval))
+            // Also tight for a pending idle stop: the coroutine timer doesn't run while the CPU
+            // sleeps, and the notification would stay up until the next 9-min alarm.
+            scheduleDozeAlarm(if (rapid || idle) interval else maxOf(DOZE_ALARM_INTERVAL_MS, interval))
             // All work for this wake is complete. Release the wake lock now so we don't hold
             // it across the entire sleep interval (could be 10+ min in background).
             if (pollWakeLock.isHeld) pollWakeLock.release()
@@ -1159,7 +1161,7 @@ class LocationService : Service() {
             rapid -> FriendPoller.RAPID_POLL_INTERVAL_MS
             inForeground -> FriendPoller.FOREGROUND_POLL_INTERVAL_MS
             // Heartbeat + friend poll. Not sharing in the background, the service stops and the
-            // worker polls instead (LocationServiceRestartWorker.MAINTENANCE_POLL_INTERVAL_S).
+            // worker polls instead (LocationServiceRestartWorker.MAINTENANCE_POLL_INTERVAL_MS).
             else -> 5 * 60 * 1000L
         }
 
@@ -1283,7 +1285,6 @@ class LocationService : Service() {
         /** How long after backgrounding a service with nothing to send stops; see pollLoop. */
         internal const val BACKGROUND_STOP_GRACE_MS = 30_000L
 
-        private const val INITIAL_NETWORK_CALLBACK_MS = 5_000L
         const val ACTION_FORCE_PUBLISH = "net.af0.where.ACTION_FORCE_PUBLISH"
         const val ACTION_GEOFENCE_EVENT = "net.af0.where.ACTION_GEOFENCE_EVENT"
         const val ACTION_HEARTBEAT_TICK = "net.af0.where.ACTION_HEARTBEAT_TICK"

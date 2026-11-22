@@ -785,20 +785,15 @@ class LocationViewModel(
         check(Looper.myLooper() == Looper.getMainLooper())
         val intent = Intent(getApplication(), LocationService::class.java)
         val hasRelationships = friends.value.isNotEmpty() || locationSource.allPendingInvites.value.isNotEmpty()
-        // While there's anyone to talk to, the worker keeps sessions alive whether or not the
-        // service runs: in the background the service only runs while we share (#481). Also
-        // kept while visible: friends may not be loaded into the state yet.
+        // Always kept: in the background with sharing off it's the only poller (#481), and
+        // friends may not be loaded into the state yet. With no one to talk to it only retries
+        // a farewell to a removed friend.
         try {
-            val workManager = WorkManager.getInstance(getApplication())
-            if (hasRelationships || inForeground) {
-                workManager.enqueueUniquePeriodicWork(
-                    LocationServiceRestartWorker.WORK_NAME,
-                    ExistingPeriodicWorkPolicy.KEEP,
-                    PeriodicWorkRequestBuilder<LocationServiceRestartWorker>(15, TimeUnit.MINUTES).build(),
-                )
-            } else {
-                workManager.cancelUniqueWork(LocationServiceRestartWorker.WORK_NAME)
-            }
+            WorkManager.getInstance(getApplication()).enqueueUniquePeriodicWork(
+                LocationServiceRestartWorker.WORK_NAME,
+                ExistingPeriodicWorkPolicy.KEEP,
+                PeriodicWorkRequestBuilder<LocationServiceRestartWorker>(15, TimeUnit.MINUTES).build(),
+            )
         } catch (_: IllegalStateException) {
             Log.w(TAG, "WorkManager not available")
         }

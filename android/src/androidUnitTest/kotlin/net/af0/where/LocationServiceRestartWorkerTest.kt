@@ -6,13 +6,10 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.work.ListenableWorker
 import androidx.work.WorkerParameters
-import app.cash.sqldelight.driver.android.AndroidSqliteDriver
 import io.mockk.coVerify
 import io.mockk.mockk
 import io.mockk.unmockkAll
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
-import net.af0.where.db.WhereDatabase
 import net.af0.where.e2ee.E2eeManager
 import org.junit.After
 import org.junit.Before
@@ -127,46 +124,43 @@ class LocationServiceRestartWorkerTest {
             assertNull(shadowOf(app).nextStartedService, "no foreground service (and notification) while not sharing")
         }
 
-    /** A friend in [app]'s store that some poll last reached at [ts] (epoch seconds). */
-    private suspend fun addFriendPolledAt(ts: Long) {
-        val qr = E2eeManager(AndroidSqliteDriver(WhereDatabase.Schema, app, null), UnconfinedTestDispatcher()).createInvite("Alice")
-        val (_, friend) = app.e2eeManager.processScannedQr(qr, "Alice")
-        app.e2eeManager.updateLastPollTs(friend.id, ts)
-    }
-
     @Test
-    fun notSharing_skipsThePollWhenAnyPollReachedAFriendRecently() =
+    fun notSharing_directPollsAreThrottledToTheMaintenanceInterval() =
         runTest {
             shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
             app.userStore.setSharing(false)
-            val now = 1_000_000_000L
-            // E.g. the service, polling every 10 s until the app left the screen.
-            addFriendPolledAt(now - LocationServiceRestartWorker.MAINTENANCE_POLL_INTERVAL_S + 1)
+            addPendingInvite()
+            var now = 1_000_000_000L
 
-            worker().also { it.nowSeconds = { now } }.doWork()
-            coVerify(exactly = 0) { poller.poll(any()) }
+            fun run() = worker().also { it.clock = { now } }
 
-            worker().also { it.nowSeconds = { now + 1 } }.doWork()
-            coVerify(exactly = 1) { poller.poll(WakeSource.HEARTBEAT) }
+            run().doWork()
+            now += 15 * 60 * 1000L // the next periodic run
+            run().doWork()
+            coVerify(exactly = 1) { poller.poll(any()) }
 
-            // A clock set back doesn't hold polling off.
-            worker().also { it.nowSeconds = { now - 3600 } }.doWork()
+            now += 15 * 60 * 1000L
+            run().doWork()
             coVerify(exactly = 2) { poller.poll(any()) }
-            assertNull(shadowOf(app).nextStartedService)
+
+            now -= 60 * 60 * 1000L // clock set back: doesn't hold polling off
+            run().doWork()
+            coVerify(exactly = 3) { poller.poll(any()) }
         }
 
     @Test
-    fun sharing_serviceStartRefused_fallbackPollIsThrottledToo() =
+    fun sharing_serviceStartRefused_pollIsNotThrottled() =
         runTest {
             shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
-            val now = 1_000_000_000L
-            addFriendPolledAt(now - 60)
-            val w = worker()
-            w.nowSeconds = { now }
-            w.startService = { throw IllegalStateException("ForegroundServiceStartNotAllowedException") }
+            addPendingInvite()
 
-            w.doWork()
+            repeat(2) {
+                val w = worker()
+                w.clock = { 1_000_000_000L }
+                w.startService = { throw IllegalStateException("ForegroundServiceStartNotAllowedException") }
+                w.doWork()
+            }
 
-            coVerify(exactly = 0) { poller.poll(any()) }
+            coVerify(exactly = 2) { poller.poll(WakeSource.HEARTBEAT) }
         }
 }
