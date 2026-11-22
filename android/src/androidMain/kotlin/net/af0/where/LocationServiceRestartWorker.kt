@@ -15,6 +15,9 @@ class LocationServiceRestartWorker(
     @VisibleForTesting
     internal var startService: (Intent) -> Unit = { applicationContext.startForegroundService(it) }
 
+    @VisibleForTesting
+    internal var clock: () -> Long = { System.currentTimeMillis() }
+
     override suspend fun doWork(): Result {
         val app = applicationContext as? WhereApplication ?: return Result.success()
         val friends = app.e2eeManager.listFriends()
@@ -33,14 +36,12 @@ class LocationServiceRestartWorker(
             return Result.success()
         }
         // Acks, keepalives and pairing handshakes are what keep a session from expiring
-        // (ACK_TIMEOUT_SECONDS), so they must keep happening when LocationService can't do them:
-        // no location permission on API 34+, or Android refusing to start a location foreground
-        // service from the background (e.g. only "while in use" permission). When the service is
-        // startable, nudging it is enough - it polls itself, and polling here too would double
-        // the background request rate.
-        if (!applicationContext.canRunLocationService()) {
-            Log.i(TAG, "LocationService cannot run (no location permission); polling directly")
-            app.friendPoller.poll(WakeSource.HEARTBEAT)
+        // (ACK_TIMEOUT_SECONDS), so they must keep happening when LocationService isn't running.
+        // It only runs in the background while we share (#481): when we don't (or can't, without
+        // location permission), poll from here. When it does run, nudging it is enough - it polls
+        // itself, and polling here too would double the background request rate.
+        if (!applicationContext.needsBackgroundService(app.userStore)) {
+            pollThrottled(app)
             return Result.success()
         }
         Log.i(TAG, "WorkManager heartbeat: ensuring LocationService is running + forcing tick")
@@ -61,8 +62,34 @@ class LocationServiceRestartWorker(
         return Result.success()
     }
 
+    /**
+     * Polls unless this worker polled less than [MAINTENANCE_POLL_INTERVAL_MS] ago, so the
+     * 15-min work period doesn't double the 30-min maintenance rate the paused service had.
+     */
+    private suspend fun pollThrottled(app: WhereApplication) {
+        val prefs = applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val now = clock()
+        val last = prefs.getLong(KEY_LAST_POLL, 0L)
+        // A clock that went backwards doesn't hold polling off.
+        if (last in (now - MAINTENANCE_POLL_INTERVAL_MS + 1)..now) {
+            Log.i(TAG, "Polled ${(now - last) / 60_000} min ago; skipping")
+            return
+        }
+        Log.i(TAG, "LocationService not needed in background; polling directly")
+        prefs.edit().putLong(KEY_LAST_POLL, now).apply()
+        app.friendPoller.poll(WakeSource.HEARTBEAT)
+    }
+
     companion object {
         private const val TAG = "LocationServiceRestartWorker"
+        private const val PREFS = "where_prefs"
+        private const val KEY_LAST_POLL = "worker_last_poll_ms"
+
+        /**
+         * Under 30 min on purpose: the 15-min work period jitters, and a run landing just short
+         * of 30 min would otherwise skip to 45.
+         */
+        internal const val MAINTENANCE_POLL_INTERVAL_MS = 25 * 60 * 1000L
         const val WORK_NAME = "location_service_keepalive"
     }
 }

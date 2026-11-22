@@ -603,6 +603,82 @@ class LocationServiceTest {
         io.mockk.verify(exactly = 1) { mockE2ee.addDiagnosticEvent("Stationary: Geofence queued") }
     }
 
+    private fun buildServiceWithFriend(): Pair<org.robolectric.android.controller.ServiceController<LocationService>, LocationClient> {
+        val controller = Robolectric.buildService(LocationService::class.java)
+        val service = controller.get()
+        val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+        service.locationClientOverride = mockClient
+        service.locationSourceOverride = fakeLocationSource
+        val mockStore = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
+        service.e2eeManagerOverride = mockStore
+        val friend = io.mockk.mockk<FriendEntry>(relaxed = true)
+        io.mockk.every { friend.id } returns "friend1"
+        io.mockk.coEvery { mockStore.listFriends() } returns listOf(friend)
+        io.mockk.coEvery { mockStore.listPendingInvites() } returns emptyList()
+        io.mockk.coEvery { mockClient.poll(any(), any(), any()) } returns emptyList()
+        io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
+        fakeLocationSource.onFriendsUpdated(listOf(friend))
+        return controller to mockClient
+    }
+
+    /** #481: with sharing off, no foreground service (and notification) in the background. */
+    @Test
+    fun notSharingInBackground_stopsItselfWithoutPolling() =
+        runTest {
+            (context as TestWhereApplication).userStore.setSharing(false)
+            val (controller, mockClient) = buildServiceWithFriend()
+
+            controller.create()
+            advanceUntilIdle()
+
+            assertTrue(shadowOf(controller.get()).isStoppedBySelf)
+            // The worker polls in the background; the service doesn't on its way out.
+            io.mockk.coVerify(exactly = 0) { mockClient.poll(any(), any(), any()) }
+        }
+
+    @Test
+    fun notSharing_staysWhileVisible_andStopsOnBackgrounding() =
+        runTest {
+            (context as TestWhereApplication).userStore.setSharing(false)
+            fakeLocationSource.setAppForeground(true)
+            val (controller, mockClient) = buildServiceWithFriend()
+
+            controller.create()
+            advanceUntilIdle()
+            assertFalse(shadowOf(controller.get()).isStoppedBySelf, "visible: keeps polling")
+            io.mockk.coVerify(atLeast = 1) { mockClient.poll(any(), any(), any()) }
+
+            // No wakePoll() from the test: backgrounding alone must end it, not the next
+            // 30-min timer.
+            fakeLocationSource.setAppForeground(false)
+            advanceUntilIdle()
+            assertTrue(shadowOf(controller.get()).isStoppedBySelf)
+        }
+
+    @Test
+    fun sharingInBackground_keepsRunning() =
+        runTest {
+            val (controller, _) = buildServiceWithFriend()
+
+            controller.create()
+            advanceUntilIdle()
+
+            assertFalse(shadowOf(controller.get()).isStoppedBySelf)
+        }
+
+    @Test
+    fun notSharingInBackground_staysWhilePairing() =
+        runTest {
+            (context as TestWhereApplication).userStore.setSharing(false)
+            fakeLocationSource.triggerRapidPoll()
+            val (controller, _) = buildServiceWithFriend()
+
+            controller.create()
+            runCurrent()
+
+            assertFalse(shadowOf(controller.get()).isStoppedBySelf, "rapid polling for a handshake keeps it up")
+        }
+
     /**
      * Regression for the zombie-service race: pollLoop() calls stopSelf() and returns
      * permanently when there are no friends/invites. stopSelf() is asynchronous — a

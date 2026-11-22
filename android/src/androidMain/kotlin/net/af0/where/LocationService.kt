@@ -28,6 +28,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.E2eeManager
@@ -395,6 +396,13 @@ class LocationService : Service() {
             }
         }
         serviceScope.launch {
+            // Backgrounding while not sharing: wake the loop so it stops now, not after the
+            // current interval (up to 30 min with the notification still up).
+            locationSource.isAppInForeground.drop(1).collect { inForeground ->
+                if (!inForeground && !needsBackgroundService(userStore)) locationSource.wakePoll()
+            }
+        }
+        serviceScope.launch {
             locationSource.friends.collect { ensureLocationRegistration() }
         }
         serviceScope.launch {
@@ -664,13 +672,11 @@ class LocationService : Service() {
                 geofenceCenter = null
                 needsGeofence = true
             }
-            // Note: We don't call stopSelf() here even if permissions are missing or sharing is paused.
-            // This is intentional:
+            // Note: We don't call stopSelf() here. This is intentional:
             // 1. To avoid ForegroundServiceDidNotStartInTimeException on startup.
-            // 2. To allow the service to continue polling for friend updates in the background
-            //    even if we cannot share our own location.
-            // 3. To provide a persistent notification warning the user that their location
-            //    sharing intent is failing due to missing permissions or is paused.
+            // 2. While sharing is on, the persistent notification warns the user that sharing
+            //    is failing (missing permission, location services off).
+            // When sharing is off, pollLoop stops the service once the app is backgrounded.
             return
         }
 
@@ -824,6 +830,15 @@ class LocationService : Service() {
                 stopSelf()
                 return
             }
+            // Not sharing and not visible: nothing left here needs a foreground service. The
+            // worker keeps up acks and keepalives without the notification (#481); opening the
+            // app or turning sharing on starts the service again.
+            if (!inForeground && !rapid && !needsBackgroundService(userStore)) {
+                Log.i(TAG, "Not sharing and in background; stopping service (worker keeps sessions alive).")
+                e2eeManager.addDiagnosticEvent("Service stopped: not sharing in background")
+                stopSelf()
+                return
+            }
             // Watchdog: Samsung (and some other OEMs) can silently revoke FLP registrations
             // without any error callback. If we haven't seen a callback for
             // STALE_REGISTRATION_THRESHOLD_MS, force a re-registration.
@@ -847,7 +862,8 @@ class LocationService : Service() {
             if (!inForeground) enterStationaryIfIdle(elapsedClock())
             // Always poll — even when sharing is off we need to process incoming
             // EpochRotations and post Ratchet Acks so Alice's location doesn't get
-            // stuck.  The interval is 30 min in that case (maintenance-only).
+            // stuck. With sharing off this only runs while the app is visible or pairing;
+            // in the background LocationServiceRestartWorker does it.
             doPoll(source)
             // Heartbeat: ensure we send at least once every 5 minutes when stationary.
             // Runs regardless of foreground state so background location stays alive. Only when

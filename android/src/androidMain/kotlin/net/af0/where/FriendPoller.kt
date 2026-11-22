@@ -32,6 +32,16 @@ internal fun Context.canRunLocationService(): Boolean =
     hasLocationPermission() || Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE
 
 /**
+ * Whether [LocationService] has background work: sending our location. Receiving and ratchet
+ * maintenance alone (acks, keepalives) don't need a foreground service and its notification;
+ * sharing without permission keeps it where it can run (before API 34) for its warning.
+ * [LocationServiceRestartWorker] polls for them instead (#481). The service still runs while the
+ * app is visible or a pairing is in progress.
+ */
+internal fun Context.needsBackgroundService(userStore: UserStore): Boolean =
+    userStore.isSharingLocation.value && canRunLocationService()
+
+/**
  * Serializes poll cycles and holds the hourly invite-cleanup timestamp. One instance is shared by
  * every [FriendPoller] in the app (see [WhereApplication.pollGate]) so the service, worker and
  * foreground loop don't surface the same handshake twice or repeat cleanup; tests get their own.

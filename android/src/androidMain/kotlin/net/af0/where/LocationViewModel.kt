@@ -786,17 +786,25 @@ class LocationViewModel(
         val intent = Intent(getApplication(), LocationService::class.java)
         val hasLocationPermission = getApplication<Application>().hasLocationPermission()
         val hasRelationships = friends.value.isNotEmpty() || locationSource.allPendingInvites.value.isNotEmpty()
-        if ((sharing && hasLocationPermission && hasRelationships) || inForeground) {
-            startLocationService(intent)
-            try {
-                WorkManager.getInstance(getApplication()).enqueueUniquePeriodicWork(
+        // While there's anyone to talk to, the worker keeps sessions alive whether or not the
+        // service runs: in the background the service only runs while we share (#481). Also
+        // kept while visible: friends may not be loaded into the state yet.
+        try {
+            val workManager = WorkManager.getInstance(getApplication())
+            if (hasRelationships || inForeground) {
+                workManager.enqueueUniquePeriodicWork(
                     LocationServiceRestartWorker.WORK_NAME,
                     ExistingPeriodicWorkPolicy.KEEP,
                     PeriodicWorkRequestBuilder<LocationServiceRestartWorker>(15, TimeUnit.MINUTES).build(),
                 )
-            } catch (_: IllegalStateException) {
-                Log.w(TAG, "WorkManager not available")
+            } else {
+                workManager.cancelUniqueWork(LocationServiceRestartWorker.WORK_NAME)
             }
+        } catch (_: IllegalStateException) {
+            Log.w(TAG, "WorkManager not available")
+        }
+        if ((sharing && hasLocationPermission && hasRelationships) || inForeground) {
+            startLocationService(intent)
             if (sharing) {
                 val pm = getApplication<Application>().getSystemService(Context.POWER_SERVICE) as PowerManager
                 val pkg = getApplication<Application>().packageName
@@ -805,18 +813,9 @@ class LocationViewModel(
                     _showBatteryOptimizationDialog.value = true
                 }
             }
-        } else if (!hasRelationships) {
-            try {
-                WorkManager.getInstance(getApplication()).cancelUniqueWork(LocationServiceRestartWorker.WORK_NAME)
-            } catch (
-                _: IllegalStateException,
-            ) {
-            }
         }
-        // Intentionally no stopService() here: when sharing is paused the service must remain
-        // alive for maintenance polls (ratchet keepalives, token ACKs) so the Double Ratchet
-        // token state stays in sync with peers. The service manages its own reduced polling
-        // interval (30 min) and GPS deregistration when sharing is off. See LocationService.
+        // No stopService() here: the service stops itself once it's backgrounded with nothing to
+        // send (see LocationService.pollLoop), after finishing whatever wake it's in.
     }
 
     companion object {
