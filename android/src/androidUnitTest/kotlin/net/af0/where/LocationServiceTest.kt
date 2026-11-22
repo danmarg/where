@@ -648,10 +648,17 @@ class LocationServiceTest {
             assertFalse(shadowOf(controller.get()).isStoppedBySelf, "visible: keeps polling")
             io.mockk.coVerify(atLeast = 1) { mockClient.poll(any(), any(), any()) }
 
+            // A brief trip out (QR scanner, permission dialog) doesn't stop it.
+            fakeLocationSource.setAppForeground(false)
+            advanceTimeBy(LocationService.BACKGROUND_STOP_GRACE_MS - 1)
+            fakeLocationSource.setAppForeground(true)
+            advanceTimeBy(LocationService.BACKGROUND_STOP_GRACE_MS * 2)
+            assertFalse(shadowOf(controller.get()).isStoppedBySelf, "back before the grace period ended")
+
             // No wakePoll() from the test: backgrounding alone must end it, not the next
             // 30-min timer.
             fakeLocationSource.setAppForeground(false)
-            advanceUntilIdle()
+            advanceTimeBy(LocationService.BACKGROUND_STOP_GRACE_MS + 1)
             assertTrue(shadowOf(controller.get()).isStoppedBySelf)
         }
 

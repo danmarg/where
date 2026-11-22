@@ -28,6 +28,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import net.af0.where.e2ee.ConnectionStatus
@@ -396,10 +398,13 @@ class LocationService : Service() {
             }
         }
         serviceScope.launch {
-            // Backgrounding while not sharing: wake the loop so it stops now, not after the
-            // current interval (up to 30 min with the notification still up).
-            locationSource.isAppInForeground.drop(1).collect { inForeground ->
-                if (!inForeground && !needsBackgroundService(userStore)) locationSource.wakePoll()
+            // Backgrounding while not sharing: wake the loop so it stops soon, not after the
+            // current interval (up to 30 min with the notification still up). After a grace
+            // period: the QR scanner and permission dialogs also background us briefly.
+            locationSource.isAppInForeground.drop(1).collectLatest { inForeground ->
+                if (inForeground) return@collectLatest
+                delay(BACKGROUND_STOP_GRACE_MS)
+                if (!needsBackgroundService(userStore)) locationSource.wakePoll()
             }
         }
         serviceScope.launch {
@@ -1275,6 +1280,9 @@ class LocationService : Service() {
 
     companion object {
         const val ACTION_POLL_ALARM = "net.af0.where.ACTION_POLL_ALARM"
+
+        /** How long after backgrounding a service with nothing to send stops; see onCreate. */
+        internal const val BACKGROUND_STOP_GRACE_MS = 30_000L
         const val ACTION_FORCE_PUBLISH = "net.af0.where.ACTION_FORCE_PUBLISH"
         const val ACTION_GEOFENCE_EVENT = "net.af0.where.ACTION_GEOFENCE_EVENT"
         const val ACTION_HEARTBEAT_TICK = "net.af0.where.ACTION_HEARTBEAT_TICK"

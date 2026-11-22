@@ -38,8 +38,7 @@ internal fun Context.canRunLocationService(): Boolean =
  * [LocationServiceRestartWorker] polls for them instead (#481). The service still runs while the
  * app is visible or a pairing is in progress.
  */
-internal fun Context.needsBackgroundService(userStore: UserStore): Boolean =
-    userStore.isSharingLocation.value && canRunLocationService()
+internal fun Context.needsBackgroundService(userStore: UserStore): Boolean = userStore.isSharingLocation.value && canRunLocationService()
 
 /**
  * Serializes poll cycles and holds the hourly invite-cleanup timestamp. One instance is shared by
