@@ -838,8 +838,10 @@ class LocationService : Service() {
             val stopGraceLeft = backgroundedAt + BACKGROUND_STOP_GRACE_MS - elapsedClock()
             val idle = !inForeground && !rapid && !needsBackgroundService(userStore)
             if (idle && stopGraceLeft <= 0) {
-                Log.i(TAG, "Not sharing and in background; stopping service (worker keeps sessions alive).")
-                e2eeManager.addDiagnosticEvent("Service stopped: not sharing in background")
+                // needsBackgroundService is also false while sharing without location permission.
+                val reason = if (isSharing) "no location permission" else "not sharing"
+                Log.i(TAG, "In background, $reason; stopping service (worker keeps sessions alive).")
+                e2eeManager.addDiagnosticEvent("Service stopped: in background, $reason")
                 // onDestroy cancels serviceScope: let a reconnect's acks and outbox flush finish.
                 networkSyncJob?.join()
                 stopSelf()

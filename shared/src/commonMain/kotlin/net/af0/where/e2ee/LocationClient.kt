@@ -105,6 +105,13 @@ open class LocationClient(
 
     private val sharingTsByFriend = mutableMapOf<String, SharingTs>()
 
+    // Friends whose latest sharing message from us, as queued, is a Location. A quiet friend's
+    // throttle counts our stop as a recent send, so for anyone else the next Location skips it:
+    // otherwise the one that resumes sharing would wait out the interval while they show us as
+    // stopped. In memory, so after a restart each friend's first Location skips it once: at most
+    // one extra post per quiet friend per process start.
+    private val locationIsLatest = mutableSetOf<String>()
+
     /**
      * Take this BEFORE reading the sharing and pause state that decides a Location send, and pass
      * it to [sendLocation] or [sendLocationToFriend] (it is required there, so no caller can skip
@@ -152,7 +159,11 @@ open class LocationClient(
     // Once a stop to them is queued, nothing is owed: every stop is queued under the friend's
     // mutex, so a later stop not yet queued was issued before this one was, and this one says the
     // same, after every Location before it.
-    private suspend fun stopQueued(friendId: String) = sharingOrderMutex.withLock { owedStops.remove(friendId) }
+    private suspend fun stopQueued(friendId: String) =
+        sharingOrderMutex.withLock {
+            owedStops.remove(friendId)
+            locationIsLatest.remove(friendId)
+        }
 
     // Once a Location with [stamp] is queued: one decided on after every stop to them means
     // sharing is on again, so nothing is owed. One decided on before a stop (it passed its check,
@@ -161,7 +172,10 @@ open class LocationClient(
         friendId: String,
         stamp: Long,
     ) = sharingOrderMutex.withLock {
-        if (!stopIssuedSinceLocked(friendId, stamp)) owedStops.remove(friendId)
+        if (!stopIssuedSinceLocked(friendId, stamp)) {
+            owedStops.remove(friendId)
+            locationIsLatest.add(friendId)
+        }
     }
 
     internal suspend fun isStopOwed(friendId: String): Boolean = sharingOrderMutex.withLock { friendId in owedStops }
@@ -655,6 +669,7 @@ open class LocationClient(
             lastStopIssued.remove(friendId)
             owedStops.remove(friendId)
             sharingTsByFriend.remove(friendId)
+            locationIsLatest.remove(friendId)
         }
         mutexLock.withLock {
             silentDropRetries.keys.removeAll { it.startsWith("$friendId:") }
@@ -768,7 +783,11 @@ open class LocationClient(
         // UNRESPONSIVE_SEND_INTERVAL_SECONDS before even trying again, since lastSentTs is set
         // at generation time regardless of delivery success.
         val hasStuckOutbox = runCatching { store.getOutbox(friend.id) }.getOrNull()?.isNotEmpty() == true
-        return hasStuckOutbox || isSendDueForUnresponsiveFriend(friend, now)
+        // And a friend whose latest queued message from us isn't a Location (a stop, or unknown
+        // after a restart) gets the next one regardless, so a resume isn't held behind the stop.
+        return hasStuckOutbox ||
+            isSendDueForUnresponsiveFriend(friend, now) ||
+            sharingOrderMutex.withLock { friend.id !in locationIsLatest }
     }
 
     @Throws(Exception::class)
