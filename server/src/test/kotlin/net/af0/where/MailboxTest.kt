@@ -315,36 +315,32 @@ class MailboxTest {
     // Retention: messages MAILBOX_RETENTION_SECONDS, dedup records 7 days
     // ---------------------------------------------------------------------------
 
-    private class FakeClock(var nowMs: Long = 1_800_000_000_000L) {
-        fun advanceDays(days: Long) {
-            nowMs += days * 86_400_000L
-        }
-    }
+    private val day = 86_400_000L
 
     private val retentionDays = net.af0.where.e2ee.MAILBOX_RETENTION_SECONDS / 86_400
 
     @Test
     fun `an unread message is kept for the whole retention`() {
-        val clock = FakeClock()
-        val state = InMemoryMailboxState(clock = { clock.nowMs })
+        var now = 1_800_000_000_000L
+        val state = InMemoryMailboxState(clock = { now })
         state.post("keep", JsonPrimitive("m"), "m-1")
-        clock.advanceDays(retentionDays - 1)
+        now += (retentionDays - 1) * day
         state.evictForTest(rateLimitWindowMs = 0)
         assertEquals(1, state.drain("keep")!!.size, "still there a day before retention ends")
-        clock.advanceDays(2)
+        now += 2 * day
         assertTrue(state.drain("keep")!!.isEmpty(), "gone after retention")
     }
 
     @Test
     fun `a dedup record expires after 7 days, so a late retry of a read message is queued again`() {
-        val clock = FakeClock()
-        val state = InMemoryMailboxState(clock = { clock.nowMs })
+        var now = 1_800_000_000_000L
+        val state = InMemoryMailboxState(clock = { now })
         state.post("late", JsonPrimitive("m"), "m-1")
         state.deleteById("late", "m-1")
-        clock.advanceDays(6)
+        now += 6 * day
         state.post("late", JsonPrimitive("m"), "m-1")
         assertTrue(state.drain("late")!!.isEmpty(), "within 7 days the retry is deduped")
-        clock.advanceDays(2)
+        now += 2 * day
         state.evictForTest(rateLimitWindowMs = 0)
         state.post("late", JsonPrimitive("m"), "m-1")
         // The reader drops this copy as a replay; that's the accepted cost of the short dedup TTL.
@@ -353,10 +349,10 @@ class MailboxTest {
 
     @Test
     fun `a retry of a message still queued is not queued twice after its dedup record expires`() {
-        val clock = FakeClock()
-        val state = InMemoryMailboxState(clock = { clock.nowMs })
+        var now = 1_800_000_000_000L
+        val state = InMemoryMailboxState(clock = { now })
         state.post("live-retry", JsonPrimitive("m"), "m-1")
-        clock.advanceDays(8)
+        now += 8 * day
         state.evictForTest(rateLimitWindowMs = 0)
         state.post("live-retry", JsonPrimitive("m"), "m-1")
         assertEquals(1, state.drain("live-retry")!!.size)

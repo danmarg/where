@@ -33,9 +33,6 @@ class LongAbsenceTest {
 
         private val mailboxes = mutableMapOf<String, MutableList<Entry>>()
 
-        /** The next this many polls fail, as with no network. */
-        var failNextPolls = 0
-
         /** When each post was made (seconds), duplicates included. */
         val postTimes = mutableListOf<Long>()
 
@@ -59,13 +56,7 @@ class LongAbsenceTest {
         override suspend fun poll(
             baseUrl: String,
             token: String,
-        ): List<MailboxPayload> {
-            if (failNextPolls > 0) {
-                failNextPolls--
-                throw MailboxTimeoutException(RuntimeException("offline"))
-            }
-            return live(token).take(50).map { it.payload }
-        }
+        ): List<MailboxPayload> = live(token).take(50).map { it.payload }
 
         override suspend fun ackId(
             baseUrl: String,
@@ -84,7 +75,10 @@ class LongAbsenceTest {
         }
     }
 
-    /** One client's network: while [offline], every request fails as with no connection. */
+    /**
+     * One client's network: while [offline], every request fails as with no connection. Not
+     * ChaosMailboxClient: that doesn't fail acks, and an offline device can't ack either.
+     */
     private class Link(private val inner: MailboxClient) : MailboxClient {
         var offline = false
 
@@ -131,29 +125,53 @@ class LongAbsenceTest {
     private class Peers(
         val alice: LocationClient,
         val aliceStore: E2eeManager,
+        val aliceLink: Link,
         val bob: LocationClient,
         val bobStore: E2eeManager,
+        val bobLink: Link,
         val id: String,
-        val aliceLink: Link,
-    )
+    ) {
+        /** Each side's entry for the other. */
+        suspend fun aliceView() = aliceStore.getFriend(id)!!
+
+        suspend fun bobView() = bobStore.getFriend(id)!!
+
+        /** A few rounds each way, so both sides have ratcheted; Alice reads last. */
+        suspend fun warmUp(
+            clock: MockTimeProvider,
+            rounds: Int = 3,
+        ) = repeat(rounds) {
+            alice.share(1.0)
+            clock.advanceSeconds(30)
+            bob.poll()
+            bob.share(2.0)
+            clock.advanceSeconds(30)
+            alice.poll()
+        }
+    }
 
     private suspend fun pair(mailbox: MailboxClient): Peers {
         val aliceStore = testE2eeManager(createTestSqlDriver())
         val aliceLink = Link(mailbox)
         val alice = LocationClient("http://localhost", aliceStore, aliceLink)
         val bobStore = testE2eeManager(createTestSqlDriver())
-        val bob = LocationClient("http://localhost", bobStore, mailbox)
+        val bobLink = Link(mailbox)
+        val bob = LocationClient("http://localhost", bobStore, bobLink)
         val qr = aliceStore.createInvite("Alice")
         val (init, bobEntry) = bobStore.processScannedQr(qr, "Bob")
         bob.postKeyExchangeInit(bobEntry.id, qr, init)
         val pending = alice.pollPendingInvites()
         requireNotNull(aliceStore.processKeyExchangeInit(pending[0].payload, "Bob", pending[0].inviteEkPub))
-        return Peers(alice, aliceStore, bob, bobStore, bobEntry.id, aliceLink)
+        return Peers(alice, aliceStore, aliceLink, bob, bobStore, bobLink, bobEntry.id)
     }
 
     // A send that fails (no network) is retried from the outbox later, as in the apps.
-    private suspend fun LocationClient.share(lat: Double) {
-        runCatching { sendLocation(lat, 0.0, stamp = sharingStamp()) }
+    private companion object {
+        val retentionDays = MAILBOX_RETENTION_SECONDS / 86400
+
+        suspend fun LocationClient.share(lat: Double) {
+            runCatching { sendLocation(lat, 0.0, stamp = sharingStamp()) }
+        }
     }
 
     private class Outcome(
@@ -189,52 +207,41 @@ class LongAbsenceTest {
         aliceOfflineDays: Long = 0,
         bobFirstPollFails: Boolean = false,
     ): Outcome {
-        val mailbox = TtlMailboxClient(retentionSeconds)
-        val p = pair(mailbox)
-        repeat(3) {
-            p.alice.share(1.0)
-            clock.advanceSeconds(30)
-            p.bob.poll()
-            p.bob.share(2.0)
-            clock.advanceSeconds(30)
-            p.alice.poll()
-        }
+        val p = pair(TtlMailboxClient(retentionSeconds))
+        p.warmUp(clock)
 
         // Bob leaves (and maybe Alice for a while).
         val left = currentTimeSeconds()
         val awayUntil = left + awayDays * 86400
         val aliceBackAt = left + aliceAwayDays * 86400
         val aliceOnlineAt = left + aliceOfflineDays * 86400
-
-        suspend fun aliceTick() {
-            p.aliceLink.offline = currentTimeSeconds() < aliceOnlineAt
-            p.alice.poll(isForeground = false, sharingEnabled = aliceSharing)
-            if (aliceSharing) p.alice.share(1.0)
-        }
         while (currentTimeSeconds() < awayUntil) {
-            if (currentTimeSeconds() >= aliceBackAt) aliceTick()
-            val bobPaused = p.aliceStore.getFriend(p.id)!!.isStale
-            clock.advanceSeconds(if (bobPaused) 3600 else 300)
+            if (currentTimeSeconds() >= aliceBackAt) {
+                p.aliceLink.offline = currentTimeSeconds() < aliceOnlineAt
+                p.alice.poll(isForeground = false, sharingEnabled = aliceSharing)
+                if (aliceSharing) p.alice.share(1.0)
+            }
+            clock.advanceSeconds(if (p.aliceView().isStale) 3600 else 300)
         }
-        val paused = p.aliceStore.getFriend(p.id)!!.isStale
+        val paused = p.aliceView().isStale
         assertTrue(paused == (awayDays * 86400 > FriendEntry.INACTIVITY_PAUSE_SECONDS), "Alice pauses Bob only after 7 days")
 
         // Bob comes back and opens the app.
         val back = currentTimeSeconds()
-        val aliceWarned = p.aliceStore.getFriend(p.id)!!.mayNeedRepair
-        val bobWarnedBeforePolling = p.bobStore.getFriend(p.id)!!.mayNeedRepair
+        val aliceWarned = p.aliceView().mayNeedRepair
+        val bobWarnedBeforePolling = p.bobView().mayNeedRepair
         var bobWarnedAfterFailedPoll = false
         if (bobFirstPollFails) {
-            mailbox.failNextPolls = 1
+            p.bobLink.offline = true
             p.bob.poll()
-            bobWarnedAfterFailedPoll = p.bobStore.getFriend(p.id)!!.mayNeedRepair
+            p.bobLink.offline = false
+            bobWarnedAfterFailedPoll = p.bobView().mayNeedRepair
         }
         // Bob is back before Alice: his app runs alone until hers does.
         while (currentTimeSeconds() < aliceBackAt) {
             p.bob.poll(isForeground = false)
             p.bob.share(2.0)
-            val alicePaused = p.bobStore.getFriend(p.id)!!.isStale
-            clock.advanceSeconds(if (alicePaused) 3600 else 300)
+            clock.advanceSeconds(if (p.bobView().isStale) 3600 else 300)
         }
         p.aliceLink.offline = false
 
@@ -252,8 +259,8 @@ class LongAbsenceTest {
             clock.advanceSeconds(10)
         }
 
-        val alice = p.aliceStore.getFriend(p.id)!!
-        val bob = p.bobStore.getFriend(p.id)!!
+        val alice = p.aliceView()
+        val bob = p.bobView()
         val heard = alice.lastRecvTs >= bothBack && bob.lastRecvTs >= bothBack && !alice.isStale && !bob.isStale
         return Outcome(
             resumed = heard && (!aliceSharing || bobGotFreshLocation),
@@ -291,7 +298,7 @@ class LongAbsenceTest {
     @Test
     fun survivesNearlyTheWholeRetention() =
         runTest {
-            val days = MAILBOX_RETENTION_SECONDS / 86400 - 1
+            val days = retentionDays - 1
             val o = absence(MAILBOX_RETENTION_SECONDS, awayDays = days, aliceSharing = true)
             assertTrue(o.resumed)
             assertTrue(o.aliceWarned, "the warning comes before the break")
@@ -302,7 +309,7 @@ class LongAbsenceTest {
     @Test
     fun aFailedFirstPollOnReturnShowsNoWarning() =
         runTest {
-            val days = MAILBOX_RETENTION_SECONDS / 86400 - 1
+            val days = retentionDays - 1
             val o = absence(MAILBOX_RETENTION_SECONDS, awayDays = days, aliceSharing = true, bobFirstPollFails = true)
             assertFalse(o.bobWarnedAfterFailedPoll, "a failed poll proves nothing about what's waiting")
             assertTrue(o.resumed)
@@ -344,29 +351,25 @@ class LongAbsenceTest {
         runTest {
             val mailbox = TtlMailboxClient(MAILBOX_RETENTION_SECONDS)
             val p = pair(mailbox)
-            p.alice.share(1.0)
-            clock.advanceSeconds(30)
-            p.bob.poll()
-            p.bob.share(2.0)
-            clock.advanceSeconds(30)
-            p.alice.poll()
+            p.warmUp(clock, rounds = 1)
             // Bob's app stops; Alice's keeps polling with sharing off, for 30 days. (Offset so her
             // regular keepalives don't land exactly on the pause, which would make one of them
             // the last frame and the parting keepalive unnecessary.)
             val pausedAt = currentTimeSeconds() + FriendEntry.INACTIVITY_PAUSE_SECONDS
             clock.advanceSeconds(7)
-            repeat(30 * 24 * 12) {
+            val until = currentTimeSeconds() + 30 * 86400
+            while (currentTimeSeconds() < until) {
                 p.alice.poll(isForeground = false, sharingEnabled = false)
-                clock.advanceSeconds(300)
+                clock.advanceSeconds(if (p.aliceView().isStale) 3600 else 300)
             }
-            assertTrue(p.aliceStore.getFriend(p.id)!!.isStale)
+            assertTrue(p.aliceView().isStale)
             assertEquals(1, mailbox.postTimes.count { it > pausedAt }, "exactly one frame after the pause")
         }
 
     @Test
     fun breaksWellPastRetention() =
         runTest {
-            val days = MAILBOX_RETENTION_SECONDS / 86400 + 10
+            val days = retentionDays + 10
             val o = absence(MAILBOX_RETENTION_SECONDS, awayDays = days, aliceSharing = true)
             assertFalse(o.resumed)
             assertTrue(o.aliceWarned)

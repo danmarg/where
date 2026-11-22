@@ -83,12 +83,9 @@ data class FriendEntry(
         }
 
     /**
-     * Silent for nearly the server's retention: what this friend needs from us has probably
-     * expired, so the friendship may need a re-pair. A hint for the UI only: nothing stops
-     * polling, and it clears by itself if a frame arrives. Judged from a successful poll that
-     * found nothing ([isCaughtUp]) made after the threshold ([lastPollTs]), not from the clock
-     * alone, so a device back from a long absence doesn't show it before a poll has actually had
-     * the chance to find waiting frames (a failed one doesn't count).
+     * UI hint: silent for nearly the server's retention, so what this friend needs has probably
+     * expired. Judged from a successful empty poll ([isCaughtUp]) after the threshold, not the
+     * clock, so a returning device doesn't show it before it has looked. Assumes a sane clock.
      */
     val mayNeedRepair: Boolean
         get() {

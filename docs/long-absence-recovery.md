@@ -49,6 +49,8 @@ ways:
 - **Ratchet gap.** Once Alice's oldest frames have expired, the oldest one left can be more than
   `MAX_SKIPPED_KEYS` (1,000) ahead of Bob's `recvSeq`; `ProtocolGapException` (`Session.kt:219`),
   then a force-ACK, and every later frame is further ahead. Within retention there is no gap.
+  (Retention counts from each frame's post, not from last contact: a frame that waited in the
+  sender's outbox lives a retention from when it reached the server.)
 - **Both sides silent.** Alice pauses at day 7; by day 14 her frames have expired. Bob comes back
   to nothing, so Alice is inactive to him too, and neither sends.
 

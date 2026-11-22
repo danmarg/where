@@ -91,11 +91,8 @@ private const val POLL_BASELINE_LATENCY_MS = 50L
 private const val MAILBOX_TTL_MS = MAILBOX_RETENTION_SECONDS * 1000L
 
 /**
- * How long a message's dedup record is kept. Deliberately much shorter than [MAILBOX_TTL_MS]:
- * dedup only has to cover retries, which come within minutes, while the records (one per post,
- * kept after the message is read) are the server's only lasting log of all traffic. A retry
- * after it expires still can't duplicate a live message (post() checks the message itself); one
- * of a message already read and deleted is re-queued, and the reader drops it as a replay.
+ * How long a message's dedup record is kept: only long enough for retries, since these records
+ * (one per post, kept after the message is read) are the server's lasting traffic log (§2.1.1, §10.2).
  */
 private const val RECEIVED_IDS_TTL_MS = 7 * 24 * 60 * 60 * 1000L
 
@@ -260,9 +257,9 @@ class InMemoryMailboxState(
 ) : MailboxStore {
     private val mailboxes = ConcurrentHashMap<String, ConcurrentLinkedQueue<MailboxEntry>>()
 
-    // token -> msgId -> when its dedup record expires (ms); see RECEIVED_IDS_TTL_MS.
-    private val receivedIds = ConcurrentHashMap<String, ConcurrentHashMap<String, Long>>()
-    private val receivedIdsOrder = ConcurrentHashMap<String, ConcurrentLinkedQueue<String>>()
+    // token -> msgId -> when its dedup record expires (ms), oldest first; see RECEIVED_IDS_TTL_MS.
+    // Each token's map is only touched under that token's lock.
+    private val receivedIds = ConcurrentHashMap<String, LinkedHashMap<String, Long>>()
     private val dummyQueue = ConcurrentLinkedQueue<MailboxEntry>()
 
     private val locks = StripedLocks()
@@ -299,8 +296,9 @@ class InMemoryMailboxState(
                 queue.add(MailboxEntry(payload, now + MAILBOX_TTL_MS, msgId))
             }
             if (msgId != null) {
-                receivedIds.getOrPut(token) { ConcurrentHashMap() }[msgId] = now + RECEIVED_IDS_TTL_MS
-                receivedIdsOrder.getOrPut(token) { ConcurrentLinkedQueue() }.add(msgId)
+                val ids = receivedIds.getOrPut(token) { LinkedHashMap() }
+                ids.remove(msgId) // re-insert, so the map stays in expiry order
+                ids[msgId] = now + RECEIVED_IDS_TTL_MS
             }
             return true
         }
@@ -351,16 +349,12 @@ class InMemoryMailboxState(
         receivedIds.forEach { (token, ids) ->
             synchronized(getLock(token)) {
                 ids.values.removeIf { it <= now }
-                val order = receivedIdsOrder[token]
-                order?.removeIf { !ids.containsKey(it) }
-                while (ids.size > MAX_QUEUE_DEPTH && order != null) {
-                    val oldest = order.poll() ?: break
-                    ids.remove(oldest)
+                val oldestFirst = ids.keys.iterator()
+                while (ids.size > MAX_QUEUE_DEPTH) {
+                    oldestFirst.next()
+                    oldestFirst.remove()
                 }
-                if (ids.isEmpty()) {
-                    receivedIds.remove(token)
-                    receivedIdsOrder.remove(token)
-                }
+                if (ids.isEmpty()) receivedIds.remove(token)
             }
         }
     }
@@ -512,10 +506,10 @@ class DynamoMailboxState(
     private val clock: () -> Long = System::currentTimeMillis,
 ) : MailboxStore {
     private val locks = StripedLocks()
-    private val depthCounts = ConcurrentHashMap<String, Int>()
+    private val depthCounts = ConcurrentHashMap<String, CachedDepth>()
 
-    // When each depthCounts entry was last counted from the table (ms); see currentDepth().
-    private val depthSeededAt = ConcurrentHashMap<String, Long>()
+    /** A token's live message count, and when it was last counted from the table (ms). */
+    private data class CachedDepth(val count: Int, val countedAt: Long)
 
     private fun getLock(token: String) = locks[token]
 
@@ -730,7 +724,7 @@ class DynamoMailboxState(
                 depthCounts.remove(token)
                 throw e
             }
-            depthCounts[token] = depth + 1
+            depthCounts.computeIfPresent(token) { _, cached -> cached.copy(count = depth + 1) }
             return true
         }
     }
@@ -767,11 +761,9 @@ class DynamoMailboxState(
         now: Long,
     ): Int {
         val cached = depthCounts[token]
-        val seededAt = depthSeededAt[token]
-        if (cached != null && seededAt != null && now - seededAt < DEPTH_CACHE_RESEED_MS) return cached
+        if (cached != null && now - cached.countedAt < DEPTH_CACHE_RESEED_MS) return cached.count
         val count = queryLiveDepth(token, now)
-        depthCounts[token] = count
-        depthSeededAt[token] = now
+        depthCounts[token] = CachedDepth(count, now)
         return count
     }
 
@@ -812,8 +804,8 @@ class DynamoMailboxState(
         token: String,
         by: Int,
     ) {
-        depthCounts.computeIfPresent(token) { _, count ->
-            (count - by).coerceAtLeast(0).takeIf { it > 0 }
+        depthCounts.computeIfPresent(token) { _, cached ->
+            (cached.count - by).takeIf { it > 0 }?.let { cached.copy(count = it) }
         }
     }
 
@@ -1006,8 +998,6 @@ class DynamoMailboxState(
         if (depthCounts.size > MAX_DEPTH_CACHE_ENTRIES) {
             for (token in depthCounts.keys) synchronized(getLock(token)) { depthCounts.remove(token) }
         }
-        // Seed times of entries already dropped. Losing one only forces a re-count, so no lock.
-        depthSeededAt.keys.retainAll(depthCounts.keys)
     }
 
     override fun close() {

@@ -548,22 +548,18 @@ open class LocationClient(
                 val weAreSilent = now - friendAfter.lastSentTs >= UNRESPONSIVE_SEND_INTERVAL_SECONDS
                 val heartbeatTriggerStalled = now - friendAfter.lastSentTs >= AUTOMATED_KEEPALIVE_BACKSTOP_SECONDS
 
-                // Parting keepalive: a friend we've paused (isStale) gets nothing more from us, but
-                // must still find a frame from us dated at or after the pause when they come back.
-                // Otherwise, if both apps were stopped across the pause (both away for over a
-                // week), each comes back to find nothing, sees the other as inactive, and neither
-                // ever sends again. So a stale friend gets exactly one keepalive if we've sent them
-                // nothing since they went stale: just after the pause if we were running, or on our
-                // first poll back if we weren't. It stays on the server for MAILBOX_RETENTION_SECONDS.
-                // See docs/long-absence-recovery.md.
+                val stale = friendAfter.isStale
+                val regularDue = !stale && (if (isPaused) weAreSilent else heartbeatTriggerStalled)
+                // Parting keepalive: a friend we've paused gets one frame dated after the pause, so
+                // two friends both away across it don't each find nothing and never send again
+                // (spec §13 item 4, docs/long-absence-recovery.md).
                 val owedPartingKeepalive =
-                    friendAfter.isStale &&
-                        friendAfter.lastSentTs < friendAfter.lastRecvTs + FriendEntry.INACTIVITY_PAUSE_SECONDS
+                    stale && friendAfter.lastSentTs < friendAfter.lastRecvTs + FriendEntry.INACTIVITY_PAUSE_SECONDS
 
                 // Check outbox to avoid redundant keepalives.
                 val dueForAutomatedKeepalive =
                     enableAutomatedKeepalives &&
-                        (owedPartingKeepalive || (!friendAfter.isStale && if (isPaused) weAreSilent else heartbeatTriggerStalled)) &&
+                        (regularDue || owedPartingKeepalive) &&
                         friendAfter.isConfirmed &&
                         store.getOutbox(friendId).isEmpty()
 
