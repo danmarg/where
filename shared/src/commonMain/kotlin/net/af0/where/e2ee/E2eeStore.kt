@@ -377,6 +377,19 @@ internal class E2eeStore(
 
         fun addDiagnosticEvent(message: String)
 
+        /** True if an invite with this [fingerprint] was accepted here and is still within its retention. */
+        fun isInviteConsumed(
+            fingerprint: Fingerprint,
+            now: Long,
+        ): Boolean
+
+        /** Records an accepted invite (kept until [keepUntil]) in the same transaction as the rest; prunes lapsed records. */
+        fun markInviteConsumed(
+            fingerprint: Fingerprint,
+            keepUntil: Long,
+            now: Long,
+        )
+
         fun insertOutbox(
             msgId: String,
             friendId: String,
@@ -392,6 +405,12 @@ internal class E2eeStore(
         )
     }
 
+    private data class ConsumedInvite(
+        val fingerprint: Fingerprint,
+        val keepUntil: Long,
+        val now: Long,
+    )
+
     private data class OutboxInsert(
         val msgId: String,
         val friendId: String,
@@ -404,6 +423,23 @@ internal class E2eeStore(
         override val friends: List<FriendEntry> get() = this@E2eeStore.friends.values.toList()
 
         private val queuedOutboxInserts = mutableListOf<OutboxInsert>()
+
+        private val queuedConsumedInvites = mutableListOf<ConsumedInvite>()
+
+        override fun isInviteConsumed(
+            fingerprint: Fingerprint,
+            now: Long,
+        ): Boolean =
+            queuedConsumedInvites.any { it.fingerprint == fingerprint } ||
+                database.consumedInvitesQueries.isConsumed(fingerprint.toByteArray(), now).executeAsOne() > 0
+
+        override fun markInviteConsumed(
+            fingerprint: Fingerprint,
+            keepUntil: Long,
+            now: Long,
+        ) {
+            queuedConsumedInvites.add(ConsumedInvite(fingerprint, keepUntil, now))
+        }
 
         override fun insertOutbox(
             msgId: String,
@@ -452,6 +488,10 @@ internal class E2eeStore(
         }
 
         fun applyToDb() {
+            queuedConsumedInvites.forEach { c ->
+                database.consumedInvitesQueries.pruneConsumed(c.now)
+                database.consumedInvitesQueries.insertConsumed(c.fingerprint.toByteArray(), c.keepUntil)
+            }
             queuedOutboxDeletes.forEach { (friendId, token) -> database.outboxQueries.deleteOutboxByFriendIdAndToken(friendId, token) }
             queuedOutboxInserts.forEach { outbox ->
                 database.outboxQueries.insertOutbox(

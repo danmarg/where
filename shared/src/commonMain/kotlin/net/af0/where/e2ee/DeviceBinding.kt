@@ -75,6 +75,7 @@ fun reconcileDeviceBinding(
             val names = database.friendsQueries.getAllFriends().executeAsList().map { it.name }
             database.friendsQueries.deleteAll()
             database.invitesQueries.deleteAll()
+            database.consumedInvitesQueries.deleteAll()
             database.outboxQueries.deleteAll()
             database.deviceBindingQueries.setMarker(marker)
             names

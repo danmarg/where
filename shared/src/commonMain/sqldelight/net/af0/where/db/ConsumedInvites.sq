@@ -1,0 +1,19 @@
+-- Invites this device accepted, so one can't pair twice even after the friend was removed (the
+-- inviter deletes the invite on the first init). Keyed by the fingerprint (a hash) of the invite's
+-- public key; nothing secret. Pruned once past the invite's expiry plus a margin.
+CREATE TABLE ConsumedInvites (
+    fingerprint BLOB NOT NULL PRIMARY KEY,
+    keepUntil INTEGER NOT NULL
+);
+
+isConsumed:
+SELECT COUNT(*) FROM ConsumedInvites WHERE fingerprint = ? AND keepUntil >= ?;
+
+insertConsumed:
+INSERT OR REPLACE INTO ConsumedInvites(fingerprint, keepUntil) VALUES (?, ?);
+
+pruneConsumed:
+DELETE FROM ConsumedInvites WHERE keepUntil < ?;
+
+deleteAll:
+DELETE FROM ConsumedInvites;

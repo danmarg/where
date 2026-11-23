@@ -173,9 +173,6 @@ class LocationViewModel(
     // Declared before init {}: viewModelScope runs on Main.immediate, so the init-block collectors
     // run during construction and can start the service before later properties are initialized.
     @VisibleForTesting
-    internal var consumedInvites = ConsumedInvites(app.getSharedPreferences(ConsumedInvites.PREFS_NAME, Context.MODE_PRIVATE))
-
-    @VisibleForTesting
     internal var serviceStarter: (Intent) -> Unit = { getApplication<Application>().startForegroundService(it) }
 
     // Service starts Android refused because the app was not foreground-eligible, keyed by
@@ -456,10 +453,12 @@ class LocationViewModel(
         }
         // Idempotent per invite: accepting one pairs with fresh keys, so a redelivered or
         // re-opened link for an invite we already accepted must not pair a second time. The
-        // friend list covers every pairing that still exists (including ones from before
-        // consumedInvites existed); consumedInvites also covers a friend since removed.
-        // E2eeManager.processScannedQr enforces the friend-list check again under its lock.
-        if (consumedInvites.contains(qr) || friends.value.any { it.isFromInvite(qr) }) {
+        // friend list is the cheap early check; E2eeManager.processScannedQr enforces it again
+        // under its lock, together with the stored record of consumed invites (which also covers
+        // a friend since removed) and reports it as InviteAlreadyAcceptedException. Consumed
+        // records are not imported from the old SharedPreferences store: invites accepted before
+        // this upgrade are forgotten (at most 48 h of exposure, and the inviter has dropped them).
+        if (friends.value.any { it.isFromInvite(qr) }) {
             Log.w(TAG, "processQrUrl: invite already accepted")
             showInviteError(MR.strings.invite_already_used)
             return false
@@ -475,6 +474,24 @@ class LocationViewModel(
 
         uiStateStore.onPendingQrForNaming(qr)
         triggerRapidPoll()
+        // The stored record (a friend since removed) needs the database: check it right away and
+        // take the naming dialog back down if the invite was already used.
+        viewModelScope.launch {
+            val consumed =
+                try {
+                    e2eeManager.isInviteConsumed(qr)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    false
+                }
+            if (consumed && pendingQrForNaming.value == qr) {
+                Log.w(TAG, "processQrUrl: invite already accepted (consumed record)")
+                uiStateStore.onPendingQrForNaming(null)
+                locationSource.resetRapidPoll()
+                showInviteError(MR.strings.invite_already_used)
+            }
+        }
         return true
     }
 
@@ -489,15 +506,6 @@ class LocationViewModel(
     ) {
         Log.d(TAG, "confirmQrScan: friendName=$friendName")
         uiStateStore.onPendingQrForNaming(null)
-        if (consumedInvites.contains(qr)) {
-            Log.w(TAG, "confirmQrScan: invite already accepted")
-            showInviteError(MR.strings.invite_already_used)
-            return
-        }
-        // Marked before the async exchange so a duplicate confirm can't start a second one.
-        // Kept even if the mailbox post fails: the pairing is already persisted and its init
-        // message stays queued in the outbox for retry.
-        consumedInvites.add(qr)
         locationSource.confirmQrScan()
 
         // Reset our own invite state immediately.
@@ -547,14 +555,13 @@ class LocationViewModel(
                     _isExchanging.value = false
                 }
             } catch (e: InviteAlreadyAcceptedException) {
-                // Already paired from this invite (so it stays marked as consumed).
+                // Already paired from this invite (a duplicate confirm, or a friend since removed).
                 Log.w(TAG, "confirmQrScan: invite already accepted")
                 showInviteError(MR.strings.invite_already_used)
                 _isExchanging.value = false
             } catch (e: Exception) {
                 Log.e(TAG, "confirmQrScan: processScannedQr failed", e)
-                // No pairing was created, so the invite may be tried again.
-                consumedInvites.remove(qr)
+                // No pairing was created (the consumed record commits with it), so the invite may be tried again.
                 if (e is InviteExpiredException) showInviteError(MR.strings.invite_expired) else updateStatus(e)
                 _isExchanging.value = false
             }

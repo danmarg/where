@@ -429,6 +429,10 @@ class E2eeManager(
         return updatedEntry to message
     }
 
+    /** True if [qr] was already accepted on this device and its record is still kept (even if the friend was removed). */
+    suspend fun isInviteConsumed(qr: QrPayload): Boolean =
+        persistence.withMetadataLock { isInviteConsumed(fingerprint(qr.ekPub.toDhPublicKey()), currentTimeSeconds()) }
+
     @Throws(Exception::class, SelfPairingException::class, InviteAlreadyAcceptedException::class, AuthenticationException::class)
     suspend fun processScannedQr(
         qr: QrPayload,
@@ -469,9 +473,16 @@ class E2eeManager(
                 throw SelfPairingException()
             }
             // Checked under the store lock, so two confirms of the same invite can't both pair.
-            if (metadata.friends.any { it.isFromInvite(qr) }) {
+            // The consumed-invite record also covers a friend removed since: the inviter deleted the
+            // invite on the first init, so pairing again would reach a mailbox nobody polls.
+            val now = currentTimeSeconds()
+            val inviteFp = fingerprint(qr.ekPub.toDhPublicKey())
+            if (metadata.friends.any { it.isFromInvite(qr) } || metadata.isInviteConsumed(inviteFp, now)) {
                 throw InviteAlreadyAcceptedException()
             }
+            // An invite without an expiry never lapses on its own, so its record is kept a week.
+            val keepUntil = qr.expiresAt?.plus(2 * INVITE_EXPIRY_GRACE_SECONDS) ?: (now + UNDATED_INVITE_RECORD_SECONDS)
+            metadata.markInviteConsumed(inviteFp, keepUntil, now)
             PersistenceAction.Update(entry) to (payload to entry)
         }
     }
@@ -711,3 +722,5 @@ class E2eeManager(
         const val MAX_PEER_CLOCK_SKEW_SECONDS = 10 * 60L
     }
 }
+
+private const val UNDATED_INVITE_RECORD_SECONDS = 7L * 24 * 3600
