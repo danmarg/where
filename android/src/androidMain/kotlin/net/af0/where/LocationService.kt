@@ -29,13 +29,11 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
@@ -45,6 +43,7 @@ import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.LocationClient
 import net.af0.where.e2ee.UserStore
 import net.af0.where.shared.MR
+import java.util.concurrent.atomic.AtomicInteger
 
 private const val TAG = "LocationService"
 
@@ -186,9 +185,24 @@ class LocationService : Service() {
     // The poll loop's last view of the foreground, to spot the app leaving it.
     private var wasInForeground = false
 
-    // [elapsedClock] time the app last left the foreground, as onCreate's collector saw it (or the
-    // idle stop was called off); 0 if neither happened.
-    private var backgroundedAt = 0L
+    // Owned by pollLoop alone (onCreate's collectors only queue [ServiceEvent]s): [elapsedClock]
+    // time the app last left the screen, null if it never did. Starts the idle stop's grace.
+    private var graceStartedAtMs: Long? = null
+
+    // What the collectors tell pollLoop; it applies them (see applyEvent) and decides again.
+    private sealed interface ServiceEvent {
+        /** The app became visible or not at [atMs] ([elapsedClock]); a visit too short for the loop to see still counts. */
+        class Visibility(val visible: Boolean, val atMs: Long) : ServiceEvent
+
+        /** Something [ServicePolicy] reads changed (sharing, rapid triggers, a sync ended). */
+        object StateChanged : ServiceEvent
+    }
+
+    private val events = Channel<ServiceEvent>(Channel.UNLIMITED)
+
+    // The id of the latest start command delivered: every ACTION_POLL_ALARM is one, and
+    // stopSelfResult only stops if no newer command was delivered than the one named.
+    private var lastStartId = 0
 
     @VisibleForTesting
     internal var consecutiveLateHeartbeats = 0
@@ -211,10 +225,19 @@ class LocationService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
-    // Parent of the network callback's syncs (several can overlap); the idle stop waits for all
-    // of them rather than cancel one mid-flush.
+    // Reconnect syncs in flight (several can overlap); the idle stop waits for all of them
+    // rather than cancel one mid-flush. Ends are reported to pollLoop as events.
+    private val runningSyncs = AtomicInteger(0)
+
+    /** Counts [job] as a running reconnect sync until it completes. */
     @VisibleForTesting
-    internal val networkSyncs = SupervisorJob(serviceScope.coroutineContext[Job])
+    internal fun registerSync(job: Job) {
+        runningSyncs.incrementAndGet()
+        job.invokeOnCompletion {
+            runningSyncs.decrementAndGet()
+            events.trySend(ServiceEvent.StateChanged)
+        }
+    }
 
     // Tracks pollLoop()'s coroutine so onStartCommand can detect and recover from the case
     // where the loop has exited (e.g. via its own stopSelf() on the no-friends path) but this
@@ -356,10 +379,10 @@ class LocationService : Service() {
             object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
                     Log.d(TAG, "Network available, triggering syncNow()")
-                    // Lazy: a child of networkSyncs before the lock is taken, so a sync finishing
-                    // meanwhile sees it and leaves the lock held.
+                    // Lazy: counted before the lock is taken, so a sync finishing meanwhile sees
+                    // it and leaves the lock held.
                     val sync =
-                        serviceScope.launch(networkSyncs, start = CoroutineStart.LAZY) {
+                        serviceScope.launch(start = CoroutineStart.LAZY) {
                             try {
                                 // A location send backing off after failures may retry now.
                                 sendScheduler.onNetworkRestored()
@@ -376,9 +399,10 @@ class LocationService : Service() {
                                 logReliability(WakeSource.NETWORK, false)
                             } finally {
                                 // The lock is shared: only the last sync still running lets go of it.
-                                if (networkSyncs.children.count() <= 1 && networkWakeLock.isHeld) networkWakeLock.release()
+                                if (runningSyncs.get() <= 1 && networkWakeLock.isHeld) networkWakeLock.release()
                             }
                         }
+                    registerSync(sync)
                     networkWakeLock.acquire(WAKE_LOCK_TIMEOUT_MS)
                     sync.start()
                 }
@@ -418,29 +442,34 @@ class LocationService : Service() {
             }
         }
         serviceScope.launch {
-            // Sharing turned off in the background: the idle stop is due now (or once the grace
-            // runs out), not at the next 5-min poll. (Revoking location permission kills the
-            // process, so there is no such edge for it.)
-            userStore.isSharingLocation.drop(1).collect { if (!it) armIdleStopAlarm() }
+            // Sharing changed (turned off in the background: the idle stop is due now, or once the
+            // grace runs out). Revoking location permission kills the process, so no such edge.
+            userStore.isSharingLocation.drop(1).collect { events.trySend(ServiceEvent.StateChanged) }
         }
-        // Taken now, not when the collector below first runs (serviceScope isn't immediate): an
-        // edge in between is a real one.
-        val initialVisibility = locationSource.isAppInForeground.value to locationSource.foregroundEntries.value
         serviceScope.launch {
-            // Leaving the foreground (or a visit too short for this to see, which still bumps
-            // foregroundEntries) starts the idle stop's grace now. With nothing to share, the alarm
-            // for its end is armed here, while the CPU is still up, without a poll; that alarm takes
-            // the poll wake lock and wakes the loop to stop. Otherwise the loop sleeps out the
-            // foreground interval and, with the screen off, first sees it at the 10-min doze alarm.
-            // foregroundEntries only grows, so only the first emission can equal the snapshot.
-            combine(locationSource.isAppInForeground, locationSource.foregroundEntries) { visible, entries -> visible to entries }
-                .filter { it != initialVisibility }
-                .collect { (visible, _) ->
-                    if (!visible) {
-                        backgroundedAt = elapsedClock()
-                        armIdleStopAlarm()
-                    }
-                }
+            merge(locationSource.lastRapidPollTrigger.drop(1), locationSource.pendingInitPayload.drop(1))
+                .collect { events.trySend(ServiceEvent.StateChanged) }
+        }
+        // Taken now, not when the collectors below first run (serviceScope isn't immediate): an
+        // edge in between is a real one.
+        val initialForeground = locationSource.isAppInForeground.value
+        val initialEntries = locationSource.foregroundEntries.value
+        // Leaving the foreground (or a visit too short for the loop to see, which still bumps
+        // foregroundEntries) starts the idle stop's grace; pollLoop applies it, arms the alarm for
+        // its end and stops then, without polling on the way out. Each collector reports what the
+        // app is doing when it runs, so whichever sees the end of a visit restarts the grace.
+        serviceScope.launch {
+            var first = true
+            locationSource.isAppInForeground.collect {
+                // The first emission is the current value: nothing happened if it is the snapshot.
+                if (!first || it != initialForeground) events.trySend(ServiceEvent.Visibility(it, elapsedClock()))
+                first = false
+            }
+        }
+        serviceScope.launch {
+            locationSource.foregroundEntries
+                .filter { it != initialEntries }
+                .collect { events.trySend(ServiceEvent.Visibility(locationSource.isAppInForeground.value, elapsedClock())) }
         }
         serviceScope.launch {
             locationSource.friends.collect { ensureLocationRegistration() }
@@ -510,6 +539,7 @@ class LocationService : Service() {
             Log.w(TAG, "onStartCommand: startForeground previously failed; ignoring command")
             return START_NOT_STICKY
         }
+        lastStartId = startId
         Log.d(TAG, "onStartCommand: isRegistered=$isRegistered")
         ensurePollLoopRunning()
         ensureLocationRegistration()
@@ -841,31 +871,86 @@ class LocationService : Service() {
             },
         ).also { it.start() }
 
+    private fun applyEvent(event: ServiceEvent) {
+        // Leaving the screen starts the grace; coming back needs nothing (the grace only counts
+        // while idle), so a later departure restarts it.
+        if (event is ServiceEvent.Visibility && !event.visible) graceStartedAtMs = event.atMs
+    }
+
+    private fun drainEvents() {
+        while (true) applyEvent(events.tryReceive().getOrNull() ?: break)
+    }
+
+    private suspend fun policyState(
+        rapid: Boolean,
+        syncWaitGaveUp: Boolean,
+    ) = ServicePolicy.State(
+        hasRelationships = locationSource.friends.value.isNotEmpty() || locationSource.allPendingInvites.value.isNotEmpty(),
+        appForeground = locationSource.isAppInForeground.value,
+        sharing = userStore.isSharingLocation.value,
+        canRunService = canRunLocationService(),
+        rapid = rapid,
+        graceStartedAtMs = graceStartedAtMs,
+        runningSyncs = runningSyncs.get(),
+        syncWaitGaveUp = syncWaitGaveUp,
+    )
+
+    private suspend fun decideNow(syncWaitGaveUp: Boolean): ServicePolicy.Decision {
+        drainEvents()
+        return ServicePolicy.decide(policyState(isRapidPolling(), syncWaitGaveUp), elapsedClock())
+    }
+
     /**
-     * Waits for the reconnect syncs in flight, including ones started meanwhile: true once none is
-     * left, false as soon as something may need the service again, null after
-     * [NETWORK_SYNC_WAIT_MS].
+     * Waits for the reconnect syncs in flight (including ones started meanwhile) until the policy
+     * no longer asks for it (they ended, or something needs the service again): true; false after
+     * [ServicePolicy.NETWORK_SYNC_WAIT_MS].
      */
-    private suspend fun awaitNetworkSyncs(): Boolean? =
-        withTimeoutOrNull(NETWORK_SYNC_WAIT_MS) {
-            coroutineScope {
-                val drained = async { while (true) networkSyncs.children.firstOrNull()?.join() ?: break }
-                val neededAgain =
-                    async {
-                        merge(
-                            locationSource.isAppInForeground.drop(1),
-                            locationSource.foregroundEntries.drop(1),
-                            userStore.isSharingLocation.drop(1),
-                            locationSource.lastRapidPollTrigger.drop(1),
-                            locationSource.pendingInitPayload.drop(1),
-                        ).first()
+    private suspend fun awaitSyncs(): Boolean =
+        withTimeoutOrNull(ServicePolicy.NETWORK_SYNC_WAIT_MS) {
+            while (decideNow(false) is ServicePolicy.Decision.AwaitSyncs) applyEvent(events.receive())
+            true
+        } ?: false
+
+    /**
+     * Stops the service for the latest start command delivered. False if a newer one arrived: the
+     * loop carries on, and decides again once that command's state is in.
+     */
+    private suspend fun stopFromLoop(): Boolean {
+        if (stopSelfResult(lastStartId)) return true
+        delay(STOP_RETRY_MS)
+        return false
+    }
+
+    /**
+     * The one place the alarm is armed from a decision at the end of an iteration; also
+     * (re)armed for the end of the grace when a state change starts it mid-sleep.
+     */
+    private fun armAlarm(delayMs: Long) = scheduleDozeAlarm(delayMs.coerceAtLeast(0))
+
+    /**
+     * Sleeps up to [intervalMs] or until a poll wake. A state change meanwhile arms the alarm for
+     * the end of a grace it starts, and cuts the sleep short if the service is now due to stop.
+     */
+    private suspend fun sleepUntilWake(
+        intervalMs: Long,
+        syncWaitGaveUp: Boolean,
+    ) = coroutineScope {
+        val wake = async { locationSource.awaitPollWake(intervalMs) }
+        var decideAgain = false
+        while (!decideAgain && wake.isActive) {
+            select<Unit> {
+                wake.onAwait { }
+                events.onReceive { event ->
+                    applyEvent(event)
+                    when (val d = decideNow(syncWaitGaveUp)) {
+                        is ServicePolicy.Decision.Run -> d.graceAlarmInMs?.let { armAlarm(it) }
+                        else -> decideAgain = true
                     }
-                select {
-                    drained.onAwait { true }
-                    neededAgain.onAwait { false }
-                }.also { coroutineContext.cancelChildren() }
+                }
             }
         }
+        if (decideAgain) wake.cancel()
+    }
 
     private suspend fun pollLoop() {
         // On cold/headless restart the StateFlow starts empty — hydrate once before the
@@ -876,46 +961,37 @@ class LocationService : Service() {
         }
         // The loop continues until serviceScope is cancelled in onDestroy().
         while (true) {
-            val rapid = isRapidPolling()
+            var syncWaitGaveUp = false
             val inForeground = locationSource.isAppInForeground.value
             val isSharing = userStore.isSharingLocation.value
-            if (locationSource.friends.value.isEmpty() && locationSource.allPendingInvites.value.isEmpty()) {
-                Log.i(TAG, "No friends or pending invites; stopping service.")
-                stopSelf()
-                return
-            }
             val justBackgrounded = wasInForeground && !inForeground
             // Not sharing and not visible: nothing left here needs a foreground service. The
             // worker keeps up acks and keepalives without the notification (#481); opening the
             // app or turning sharing on starts the service again. Not straight after the app
             // leaves the screen: the QR scanner and permission dialogs do that briefly.
-            val stopGraceLeft = backgroundedAt + BACKGROUND_STOP_GRACE_MS - elapsedClock()
-            val idle = !inForeground && !rapid && !needsBackgroundService(userStore)
-            if (idle && stopGraceLeft <= 0) {
-                // onDestroy cancels serviceScope: let every reconnect's acks and outbox flush
-                // finish first. If the app is opened or sharing turned on meanwhile, a start
-                // command saw this loop alive and left it running: carry on instead (a visit
-                // that is already over has restarted the grace, see onCreate).
-                val drained = awaitNetworkSyncs()
-                if (drained == null) {
-                    // Stuck or flapping: don't stop this time; poll and try again next iteration.
-                    Log.w(TAG, "Network syncs still running after ${NETWORK_SYNC_WAIT_MS / 1000}s; not stopping yet.")
-                } else if (drained &&
-                    backgroundedAt + BACKGROUND_STOP_GRACE_MS - elapsedClock() <= 0 &&
-                    !locationSource.isAppInForeground.value &&
-                    !isRapidPolling() &&
-                    !needsBackgroundService(userStore)
-                ) {
-                    // needsBackgroundService is also false while sharing without location permission.
-                    val reason = if (userStore.isSharingLocation.value) "no location permission" else "not sharing"
-                    Log.i(TAG, "In background, $reason; stopping service (worker keeps sessions alive).")
-                    e2eeManager.addDiagnosticEvent("Service stopped: in background, $reason")
-                    stopSelf()
-                    return
-                } else {
+            var run: ServicePolicy.Decision.Run? = null
+            when (val decision = decideNow(false)) {
+                is ServicePolicy.Decision.Stop -> {
+                    Log.i(TAG, "Stopping service: ${decision.reason.text}")
+                    if (decision.reason != ServicePolicy.StopReason.NO_RELATIONSHIPS) {
+                        e2eeManager.addDiagnosticEvent("Service stopped: in background, ${decision.reason.text}")
+                    }
+                    if (stopFromLoop()) return
                     continue
                 }
+                // onDestroy cancels serviceScope: let every reconnect's acks and outbox flush
+                // finish first. If the app is opened or sharing turned on meanwhile, the policy
+                // no longer asks to wait and the loop carries on.
+                is ServicePolicy.Decision.AwaitSyncs -> {
+                    if (awaitSyncs()) continue
+                    // Stuck or flapping: don't stop this time; poll and try again next iteration.
+                    Log.w(TAG, "Network syncs still running after ${ServicePolicy.NETWORK_SYNC_WAIT_MS / 1000}s; not stopping yet.")
+                    syncWaitGaveUp = true
+                    run = decideNow(true) as? ServicePolicy.Decision.Run
+                }
+                is ServicePolicy.Decision.Run -> run = decision
             }
+            val plan = run ?: continue
             // Captured here so an iteration already running when the motion trigger fired
             // doesn't release the lock that covers the one it woke.
             val releaseMotionWakeLock = motionWakePending
@@ -1010,32 +1086,15 @@ class LocationService : Service() {
                     sendScheduler.noteKeepalive(sent)
                 }
             }
-            // Wake when the grace runs out, so the stop above happens on time. Not once it has run
-            // out (a sync wait that timed out skipped the stop): a non-positive interval would spin.
-            val interval =
-                if (idle && stopGraceLeft > 0) {
-                    minOf(pollInterval(rapid, inForeground), stopGraceLeft)
-                } else {
-                    pollInterval(rapid, inForeground)
-                }
-            // Schedule the doze alarm above the platform's ~9-min minimum for
-            // setExactAndAllowWhileIdle. Scheduling below that causes silent deferral to the
-            // next maintenance window — often hours on Samsung in deep Doze.
-            // During rapid polling (key exchange) keep the tight interval for responsiveness.
-            // FLP callbacks and the poll timer drive the finer-grained heartbeat while the
-            // foreground service is alive; the alarm is the dead-service safety net.
-            // Also tight for a pending idle stop: the coroutine timer doesn't run while the CPU
-            // sleeps, and the notification would stay up until the next 9-min alarm.
-            val alarmIn = if (rapid || idle) interval else maxOf(DOZE_ALARM_INTERVAL_MS, interval)
-            // Nor later than an idle stop armed while this iteration ran (onCreate's collectors).
-            // Not while rapid polling, which keeps its tight interval and isn't an idle stop.
-            val graceAlarmIn = if (rapid) null else idleStopAlarmIn(idle)
-            scheduleDozeAlarm(if (graceAlarmIn != null) minOf(alarmIn, graceAlarmIn) else alarmIn)
+            // The one alarm backs the sleep. Changes during this iteration are queued events: the
+            // sleep applies them first, re-arming the alarm for a grace they start or cutting the
+            // sleep short when the service is now due to stop.
+            armAlarm(plan.alarmInMs)
             // All work for this wake is complete. Release the wake lock now so we don't hold
             // it across the entire sleep interval (could be 10+ min in background).
             if (pollWakeLock.isHeld) pollWakeLock.release()
             if (releaseMotionWakeLock && motionWakeLock.isHeld) motionWakeLock.release()
-            locationSource.awaitPollWake(interval)
+            sleepUntilWake(plan.pollIntervalMs, syncWaitGaveUp)
             cancelDozeAlarm()
         }
     }
@@ -1226,36 +1285,6 @@ class LocationService : Service() {
     // several times an hour.
     private fun diagnostic(message: String) = e2eeManager.addDiagnosticEvent(message, message)
 
-    /** Time left in the idle stop's grace, or null while something needs the service. */
-    private fun idleStopGraceLeft(): Long? =
-        if (locationSource.isAppInForeground.value || needsBackgroundService(userStore)) {
-            null
-        } else {
-            backgroundedAt + BACKGROUND_STOP_GRACE_MS - elapsedClock()
-        }
-
-    /**
-     * When pollLoop's alarm must fire for the idle stop: at the end of the grace (at once if it is
-     * over), or null if nothing is pending. For an iteration that was itself [idle] and still
-     * didn't stop (a sync wait timed out), not once the grace is over: an alarm due now would spin.
-     */
-    private fun idleStopAlarmIn(idle: Boolean): Long? =
-        idleStopGraceLeft()?.let { left -> if (idle) left.takeIf { it > 0 } else left.coerceAtLeast(0) }
-
-    /**
-     * Arms the doze alarm for the end of the idle stop's grace (at once if it is over), when
-     * nothing needs the service. Its ACTION_POLL_ALARM takes the poll wake lock and wakes pollLoop,
-     * which stops. Exact: at 30 s after screen-off the device isn't in Doze yet, so the
-     * allow-while-idle minimum doesn't defer it. Best effort: where exact alarms are refused (the
-     * inexact fallback in [scheduleDozeAlarm]) or the allow-while-idle quota is spent, it can
-     * land late, as late as the old next-poll stop. Not while rapid polling: the alarm shares one
-     * PendingIntent with the loop's, and would replace its 2 s one.
-     */
-    private suspend fun armIdleStopAlarm() {
-        if (isRapidPolling()) return
-        idleStopGraceLeft()?.let { scheduleDozeAlarm(it.coerceAtLeast(0)) }
-    }
-
     private fun scheduleDozeAlarm(delayMs: Long) {
         val intent = Intent(this, LocationService::class.java).apply { action = ACTION_POLL_ALARM }
         val pi = PendingIntent.getService(this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -1282,11 +1311,11 @@ class LocationService : Service() {
         inForeground: Boolean,
     ): Long =
         when {
-            rapid -> FriendPoller.RAPID_POLL_INTERVAL_MS
-            inForeground -> FriendPoller.FOREGROUND_POLL_INTERVAL_MS
+            rapid -> PollPolicy.RAPID_INTERVAL_MS
+            inForeground -> PollPolicy.FOREGROUND_INTERVAL_MS
             // Heartbeat + friend poll. Not sharing in the background, the service stops and the
             // worker polls instead (LocationServiceRestartWorker.MAINTENANCE_POLL_INTERVAL_MS).
-            else -> 5 * 60 * 1000L
+            else -> PollPolicy.BACKGROUND_INTERVAL_MS
         }
 
     private val friendPoller: FriendPoller by lazy {
@@ -1407,10 +1436,14 @@ class LocationService : Service() {
         const val ACTION_POLL_ALARM = "net.af0.where.ACTION_POLL_ALARM"
 
         /** How long after backgrounding a service with nothing to send stops; see pollLoop. */
-        internal const val BACKGROUND_STOP_GRACE_MS = 30_000L
+        internal const val BACKGROUND_STOP_GRACE_MS = ServicePolicy.BACKGROUND_STOP_GRACE_MS
 
         // Longest the idle stop waits for reconnect syncs before giving up on stopping this time.
-        internal const val NETWORK_SYNC_WAIT_MS = 60_000L
+        internal const val NETWORK_SYNC_WAIT_MS = ServicePolicy.NETWORK_SYNC_WAIT_MS
+
+        // How long pollLoop waits before deciding again when stopSelfResult refused (a newer start
+        // command was delivered).
+        private const val STOP_RETRY_MS = 50L
 
         const val ACTION_FORCE_PUBLISH = "net.af0.where.ACTION_FORCE_PUBLISH"
         const val ACTION_GEOFENCE_EVENT = "net.af0.where.ACTION_GEOFENCE_EVENT"
@@ -1473,7 +1506,7 @@ class LocationService : Service() {
          * window, which can be hours in deep Doze. FLP callbacks and the poll timer drive the
          * finer-grained heartbeat while the foreground service is alive.
          */
-        const val DOZE_ALARM_INTERVAL_MS = 10 * 60 * 1000L
+        const val DOZE_ALARM_INTERVAL_MS = ServicePolicy.DOZE_ALARM_INTERVAL_MS
 
         /**
          * If no FLP callback has arrived for this long, treat the registration as silently
