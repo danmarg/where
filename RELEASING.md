@@ -39,8 +39,8 @@ This is `android fastlane deploy`. It:
 - Builds `standardGmsRelease` as an AAB.
 - Prompts for the keystore password, then uploads to Play's **internal** track.
 
-**Push the version-bump commit** (`git push`) before continuing — F-Droid's release step and
-the reproducible-build verification both need it on GitHub.
+`deploy` leaves the version-bump commit local. Don't push it by hand: step 3 pushes `main`
+for you once its checks pass. Review any other unpushed commits first, since they go out too.
 
 Once you've tested the internal build, promote it through Play's tracks:
 
@@ -59,8 +59,11 @@ These are pure track promotions (no new binary, no metadata/changelog re-upload)
 
 This is `android fastlane release_github_binaries`. Run it after step 2's `deploy`, from `main`
 with a clean tree. It:
+- Checks, before pushing `main` (the push still happens before the build and upload finish): `v<versionName>` on GitHub (a failing `git ls-remote` aborts
+  the lane rather than skipping the check), then that HEAD is the version-bump commit
+  (`Bump Android version to <versionName> ...`). `FORCE_RETAG=1` skips the bump-commit check, and also replaces an annotated remote tag at HEAD with a lightweight one.
 - Stops unless HEAD is on `origin/main`; a local `main` that is only ahead (deploy's
-  version-bump commit) is pushed first.
+  version-bump commit) is pushed after those checks.
 - Stops if `v<versionName>` is already on GitHub at another commit: that version was released,
   so run `deploy` first. Run it again at the same commit (say, after a failed upload) and it just
   re-uploads. To repair a release at its original commit, check that commit out
@@ -68,7 +71,7 @@ with a clean tree. It:
 - Runs `./gradlew clean`, then builds signed `standardGms` (universal) and `standardFdroid`
   (per-ABI) release APKs. The clean matters: leftover incremental output changes the dex, and
   F-Droid's reproducible-build check then rejects the release.
-- Tags `HEAD` as `v<versionName>` and pushes the tag (lightweight, so F-Droid records the commit).
+- Tags the commit that was built (HEAD as of the start) as `v<versionName>` and pushes the tag (lightweight, so F-Droid records the commit).
 - Creates a GitHub Release at that tag and uploads all the APKs as assets.
 
 Nothing else is manual. `fdroiddata/metadata/net.af0.where.yml` has `AutoUpdateMode: Version` and
