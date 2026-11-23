@@ -86,6 +86,9 @@ class TestFakeLocationSource(initialForeground: Boolean = false) : LocationSourc
     private val _isAppInForeground = MutableStateFlow(initialForeground)
     override val isAppInForeground: StateFlow<Boolean> = _isAppInForeground.asStateFlow()
 
+    private val _foregroundEntries = MutableStateFlow(0)
+    override val foregroundEntries: StateFlow<Int> = _foregroundEntries.asStateFlow()
+
     private val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
     override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload.asStateFlow()
 
@@ -144,6 +147,7 @@ class TestFakeLocationSource(initialForeground: Boolean = false) : LocationSourc
     }
 
     override fun setAppForeground(foreground: Boolean) {
+        if (foreground && !_isAppInForeground.value) _foregroundEntries.value += 1
         _isAppInForeground.value = foreground
     }
 

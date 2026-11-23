@@ -25,6 +25,9 @@ interface LocationSource {
     val friendLastPing: StateFlow<Map<String, Long>>
     val connectionStatus: StateFlow<ConnectionStatus>
     val isAppInForeground: StateFlow<Boolean>
+
+    /** How many times [isAppInForeground] has turned true: shows a visit that has already ended. */
+    val foregroundEntries: StateFlow<Int>
     val pendingInitPayload: StateFlow<KeyExchangeInitPayload?>
 
     /** Wall-clock time [pendingInitPayload] was last set to a non-null value; 0 when null. */
@@ -107,6 +110,9 @@ class LocationRepository(
     private val _isAppInForeground = MutableStateFlow(false)
     override val isAppInForeground: StateFlow<Boolean> = _isAppInForeground.asStateFlow()
 
+    private val _foregroundEntries = MutableStateFlow(0)
+    override val foregroundEntries: StateFlow<Int> = _foregroundEntries.asStateFlow()
+
     private val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
     override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload.asStateFlow()
 
@@ -179,6 +185,7 @@ class LocationRepository(
     }
 
     override fun setAppForeground(foreground: Boolean) {
+        if (foreground && !_isAppInForeground.value) _foregroundEntries.update { it + 1 }
         _isAppInForeground.value = foreground
     }
 
@@ -251,6 +258,7 @@ class LocationRepository(
         _friendLastPing.value = emptyMap()
         _connectionStatus.value = ConnectionStatus.Ok
         _isAppInForeground.value = false
+        _foregroundEntries.value = 0
         _pendingInitPayload.value = null
         _pendingInitPayloadSetAt.value = 0L
         _pendingInitAliceEkPub.value = null

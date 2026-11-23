@@ -23,12 +23,21 @@ import androidx.annotation.VisibleForTesting
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
+import kotlinx.coroutines.withTimeoutOrNull
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.LocationClient
@@ -175,11 +184,9 @@ class LocationService : Service() {
     // The poll loop's last view of the foreground, to spot the app leaving it.
     private var wasInForeground = false
 
-    // [elapsedClock] time pollLoop saw the app go to the background; 0 if it never saw it visible.
+    // [elapsedClock] time pollLoop saw the app go to the background (or the idle stop called off);
+    // 0 if neither happened.
     private var backgroundedAt = 0L
-
-    // The network callback's sync in flight; the idle stop waits for it rather than cancel it.
-    private var networkSyncJob: Job? = null
 
     @VisibleForTesting
     internal var consecutiveLateHeartbeats = 0
@@ -201,6 +208,11 @@ class LocationService : Service() {
     private val pendingFriendSends = Channel<String>(Channel.UNLIMITED)
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    // Parent of the network callback's syncs (several can overlap); the idle stop waits for all
+    // of them rather than cancel one mid-flush.
+    @VisibleForTesting
+    internal val networkSyncs = SupervisorJob(serviceScope.coroutineContext[Job])
 
     // Tracks pollLoop()'s coroutine so onStartCommand can detect and recover from the case
     // where the loop has exited (e.g. via its own stopSelf() on the no-friends path) but this
@@ -342,29 +354,31 @@ class LocationService : Service() {
             object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
                     Log.d(TAG, "Network available, triggering syncNow()")
-                    networkWakeLock.acquire(WAKE_LOCK_TIMEOUT_MS)
-                    networkSyncJob =
-                        serviceScope.launch {
-                            // A location send backing off after failures may retry now.
-                            sendScheduler.onNetworkRestored()
+                    // Lazy: a child of networkSyncs before the lock is taken, so a sync finishing
+                    // meanwhile sees it and leaves the lock held.
+                    val sync =
+                        serviceScope.launch(networkSyncs, start = CoroutineStart.LAZY) {
                             try {
-                                try {
-                                    locationClient.syncNow(
-                                        pausedFriendIds = userStore.effectivelyPausedIds(),
-                                        // As FriendPoller's poll: without permission we send nothing,
-                                        // so stops still owed are retried.
-                                        sharingEnabled = canSendLocations(),
-                                    )
-                                    logReliability(WakeSource.NETWORK, true)
-                                } catch (e: CancellationException) {
-                                    throw e
-                                } catch (_: Exception) {
-                                    logReliability(WakeSource.NETWORK, false)
-                                }
+                                // A location send backing off after failures may retry now.
+                                sendScheduler.onNetworkRestored()
+                                locationClient.syncNow(
+                                    pausedFriendIds = userStore.effectivelyPausedIds(),
+                                    // As FriendPoller's poll: without permission we send nothing,
+                                    // so stops still owed are retried.
+                                    sharingEnabled = canSendLocations(),
+                                )
+                                logReliability(WakeSource.NETWORK, true)
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (_: Exception) {
+                                logReliability(WakeSource.NETWORK, false)
                             } finally {
-                                if (networkWakeLock.isHeld) networkWakeLock.release()
+                                // The lock is shared: only the last sync still running lets go of it.
+                                if (networkSyncs.children.count() <= 1 && networkWakeLock.isHeld) networkWakeLock.release()
                             }
                         }
+                    networkWakeLock.acquire(WAKE_LOCK_TIMEOUT_MS)
+                    sync.start()
                 }
             }
         connectivityManager?.registerDefaultNetworkCallback(networkCallback!!)
@@ -800,6 +814,32 @@ class LocationService : Service() {
             },
         ).also { it.start() }
 
+    /**
+     * Waits for the reconnect syncs in flight, including ones started meanwhile: true once none is
+     * left, false as soon as something may need the service again, null after
+     * [NETWORK_SYNC_WAIT_MS].
+     */
+    private suspend fun awaitNetworkSyncs(): Boolean? =
+        withTimeoutOrNull(NETWORK_SYNC_WAIT_MS) {
+            coroutineScope {
+                val drained = async { while (true) networkSyncs.children.firstOrNull()?.join() ?: break }
+                val neededAgain =
+                    async {
+                        merge(
+                            locationSource.isAppInForeground.drop(1),
+                            locationSource.foregroundEntries.drop(1),
+                            userStore.isSharingLocation.drop(1),
+                            locationSource.lastRapidPollTrigger.drop(1),
+                            locationSource.pendingInitPayload.drop(1),
+                        ).first()
+                    }
+                select {
+                    drained.onAwait { true }
+                    neededAgain.onAwait { false }
+                }.also { coroutineContext.cancelChildren() }
+            }
+        }
+
     private suspend fun pollLoop() {
         // On cold/headless restart the StateFlow starts empty — hydrate once before the
         // first iteration so we don't stopSelf() before sending anything.
@@ -807,11 +847,57 @@ class LocationService : Service() {
             locationSource.onFriendsUpdated(e2eeManager.listFriends())
             locationSource.onPendingInvitesUpdated(e2eeManager.listPendingInvites())
         }
+        var seenForegroundEntries = locationSource.foregroundEntries.value
         // The loop continues until serviceScope is cancelled in onDestroy().
         while (true) {
             val rapid = isRapidPolling()
             val inForeground = locationSource.isAppInForeground.value
             val isSharing = userStore.isSharingLocation.value
+            if (locationSource.friends.value.isEmpty() && locationSource.allPendingInvites.value.isEmpty()) {
+                Log.i(TAG, "No friends or pending invites; stopping service.")
+                stopSelf()
+                return
+            }
+            val justBackgrounded = wasInForeground && !inForeground
+            if (justBackgrounded) backgroundedAt = elapsedClock()
+            // A visit since the last iteration, even one already over (the QR scanner, say), while
+            // this loop was busy polling or waiting: restart the grace below as well.
+            val foregroundEntries = locationSource.foregroundEntries.value
+            if (foregroundEntries != seenForegroundEntries) {
+                seenForegroundEntries = foregroundEntries
+                backgroundedAt = elapsedClock()
+            }
+            // Not sharing and not visible: nothing left here needs a foreground service. The
+            // worker keeps up acks and keepalives without the notification (#481); opening the
+            // app or turning sharing on starts the service again. Not straight after the app
+            // leaves the screen: the QR scanner and permission dialogs do that briefly.
+            val stopGraceLeft = backgroundedAt + BACKGROUND_STOP_GRACE_MS - elapsedClock()
+            val idle = !inForeground && !rapid && !needsBackgroundService(userStore)
+            if (idle && stopGraceLeft <= 0) {
+                // onDestroy cancels serviceScope: let every reconnect's acks and outbox flush
+                // finish first. If the app is opened or sharing turned on meanwhile, a start
+                // command saw this loop alive and left it running: carry on instead (the top of
+                // the loop restarts the grace for a visit that is already over).
+                val drained = awaitNetworkSyncs()
+                if (drained == null) {
+                    // Stuck or flapping: don't stop this time; poll and try again next iteration.
+                    Log.w(TAG, "Network syncs still running after ${NETWORK_SYNC_WAIT_MS / 1000}s; not stopping yet.")
+                } else if (drained &&
+                    locationSource.foregroundEntries.value == seenForegroundEntries &&
+                    !locationSource.isAppInForeground.value &&
+                    !isRapidPolling() &&
+                    !needsBackgroundService(userStore)
+                ) {
+                    // needsBackgroundService is also false while sharing without location permission.
+                    val reason = if (userStore.isSharingLocation.value) "no location permission" else "not sharing"
+                    Log.i(TAG, "In background, $reason; stopping service (worker keeps sessions alive).")
+                    e2eeManager.addDiagnosticEvent("Service stopped: in background, $reason")
+                    stopSelf()
+                    return
+                } else {
+                    continue
+                }
+            }
             // Captured here so an iteration already running when the motion trigger fired
             // doesn't release the lock that covers the one it woke.
             val releaseMotionWakeLock = motionWakePending
@@ -824,29 +910,6 @@ class LocationService : Service() {
                 } else {
                     WakeSource.TIMER
                 }
-            if (locationSource.friends.value.isEmpty() && locationSource.allPendingInvites.value.isEmpty()) {
-                Log.i(TAG, "No friends or pending invites; stopping service.")
-                stopSelf()
-                return
-            }
-            val justBackgrounded = wasInForeground && !inForeground
-            if (justBackgrounded) backgroundedAt = elapsedClock()
-            // Not sharing and not visible: nothing left here needs a foreground service. The
-            // worker keeps up acks and keepalives without the notification (#481); opening the
-            // app or turning sharing on starts the service again. Not straight after the app
-            // leaves the screen: the QR scanner and permission dialogs do that briefly.
-            val stopGraceLeft = backgroundedAt + BACKGROUND_STOP_GRACE_MS - elapsedClock()
-            val idle = !inForeground && !rapid && !needsBackgroundService(userStore)
-            if (idle && stopGraceLeft <= 0) {
-                // needsBackgroundService is also false while sharing without location permission.
-                val reason = if (isSharing) "no location permission" else "not sharing"
-                Log.i(TAG, "In background, $reason; stopping service (worker keeps sessions alive).")
-                e2eeManager.addDiagnosticEvent("Service stopped: in background, $reason")
-                // onDestroy cancels serviceScope: let a reconnect's acks and outbox flush finish.
-                networkSyncJob?.join()
-                stopSelf()
-                return
-            }
             // Watchdog: Samsung (and some other OEMs) can silently revoke FLP registrations
             // without any error callback. If we haven't seen a callback for
             // STALE_REGISTRATION_THRESHOLD_MS, force a re-registration.
@@ -929,7 +992,14 @@ class LocationService : Service() {
                     sendScheduler.noteKeepalive(sent)
                 }
             }
-            val interval = if (idle) minOf(pollInterval(rapid, inForeground), stopGraceLeft) else pollInterval(rapid, inForeground)
+            // Wake when the grace runs out, so the stop above happens on time. Not once it has run
+            // out (a sync wait that timed out skipped the stop): a non-positive interval would spin.
+            val interval =
+                if (idle && stopGraceLeft > 0) {
+                    minOf(pollInterval(rapid, inForeground), stopGraceLeft)
+                } else {
+                    pollInterval(rapid, inForeground)
+                }
             // Schedule the doze alarm above the platform's ~9-min minimum for
             // setExactAndAllowWhileIdle. Scheduling below that causes silent deferral to the
             // next maintenance window — often hours on Samsung in deep Doze.
@@ -1286,6 +1356,9 @@ class LocationService : Service() {
 
         /** How long after backgrounding a service with nothing to send stops; see pollLoop. */
         internal const val BACKGROUND_STOP_GRACE_MS = 30_000L
+
+        // Longest the idle stop waits for reconnect syncs before giving up on stopping this time.
+        internal const val NETWORK_SYNC_WAIT_MS = 60_000L
 
         const val ACTION_FORCE_PUBLISH = "net.af0.where.ACTION_FORCE_PUBLISH"
         const val ACTION_GEOFENCE_EVENT = "net.af0.where.ACTION_GEOFENCE_EVENT"
