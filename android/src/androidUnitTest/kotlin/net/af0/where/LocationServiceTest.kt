@@ -238,14 +238,12 @@ class LocationServiceTest {
 
     @Test
     fun testPollInterval_Foreground_Is10s() {
-        val service = Robolectric.buildService(LocationService::class.java).get()
-        assertEquals(10_000L, service.pollInterval(rapid = false, inForeground = true))
+        assertEquals(10_000L, PollPolicy.intervalMs(rapid = false, appForeground = true))
     }
 
     @Test
     fun testPollInterval_Background_Is5min() {
-        val service = Robolectric.buildService(LocationService::class.java).get()
-        assertEquals(5 * 60 * 1000L, service.pollInterval(rapid = false, inForeground = false))
+        assertEquals(5 * 60 * 1000L, PollPolicy.intervalMs(rapid = false, appForeground = false))
     }
 
     @Test
@@ -721,6 +719,32 @@ class LocationServiceTest {
             io.mockk.verify(exactly = 0) { polls() }
         }
 
+    /**
+     * Every ACTION_POLL_ALARM is a new start command: the idle stop must name the latest one
+     * (stopSelfResult), or Android ignores it when a newer command is in flight.
+     */
+    @Test
+    fun idleStop_stopsWithTheLatestStartId() =
+        runTest {
+            var now = 1_000_000L
+            LocationService.elapsedClock = { now }
+            (context as TestWhereApplication).userStore.setSharing(false)
+            fakeLocationSource.setAppForeground(true)
+            val (controller, _) = buildServiceWithFriend()
+            controller.create()
+            advanceUntilIdle()
+            fakeLocationSource.setAppForeground(false)
+            advanceUntilIdle()
+
+            now += LocationService.BACKGROUND_STOP_GRACE_MS
+            val alarm = Intent(context, LocationService::class.java).apply { action = LocationService.ACTION_POLL_ALARM }
+            controller.withIntent(alarm).startCommand(0, 7)
+            advanceUntilIdle()
+
+            assertTrue(shadowOf(controller.get()).isStoppedBySelf)
+            assertEquals(7, shadowOf(controller.get()).stopSelfResultId)
+        }
+
     /** A visit too short for the loop to see (QR scanner, say) re-arms a full grace. */
     @Test
     fun notSharing_shortVisitInBackground_rearmsAFullGrace() =
@@ -808,7 +832,7 @@ class LocationServiceTest {
         val (controller, mockClient) = buildServiceWithFriend()
         controller.create()
         // A sync in flight, as a reconnect's would be.
-        val sync = kotlinx.coroutines.Job(controller.get().networkSyncs)
+        val sync = kotlinx.coroutines.Job().also { controller.get().registerSync(it) }
         runCurrent()
         assertFalse(shadowOf(controller.get()).isStoppedBySelf, "waiting for the sync")
         return Triple(controller, mockClient, sync)
@@ -829,8 +853,8 @@ class LocationServiceTest {
     fun idleStop_waitsForOverlappingSyncs_finishingOutOfOrder() =
         runTest {
             val (controller, _, first) = serviceWaitingOnSync()
-            val second = kotlinx.coroutines.Job(controller.get().networkSyncs)
-            val third = kotlinx.coroutines.Job(controller.get().networkSyncs)
+            val second = kotlinx.coroutines.Job().also { controller.get().registerSync(it) }
+            val third = kotlinx.coroutines.Job().also { controller.get().registerSync(it) }
 
             second.complete()
             runCurrent()
@@ -841,6 +865,18 @@ class LocationServiceTest {
 
             third.complete()
             runCurrent()
+            assertTrue(shadowOf(controller.get()).isStoppedBySelf)
+        }
+
+    /** The last friend removed while the idle stop waits for a sync: the wait ends and the service stops. */
+    @Test
+    fun idleStop_lastFriendRemovedDuringTheSync_stops() =
+        runTest {
+            val (controller, _, _) = serviceWaitingOnSync()
+
+            fakeLocationSource.onFriendsUpdated(emptyList())
+            runCurrent()
+
             assertTrue(shadowOf(controller.get()).isStoppedBySelf)
         }
 

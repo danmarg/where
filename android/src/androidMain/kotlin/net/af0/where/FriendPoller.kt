@@ -18,7 +18,6 @@ import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.LocationClient
 import net.af0.where.e2ee.UserStore
 import net.af0.where.shared.MR
-import kotlin.time.Duration.Companion.milliseconds
 
 internal fun Context.hasLocationPermission(): Boolean =
     ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
@@ -112,27 +111,28 @@ internal class FriendPoller(
 
     /**
      * True while something needs a fast poll: the share sheet is open or Bob is on the naming
-     * screen (while visible, and for [PENDING_INIT_RAPID_TIMEOUT_MS] after the app is
+     * screen (while visible, and for [BACKGROUND_INVITE_WINDOW_MS] after the app is
      * backgrounded, since sharing the link leaves the app just as Bob scans), a fresh incoming
      * invite awaits Alice's confirmation, or rapid polling was recently requested.
      */
     fun isRapidPolling(): Boolean {
         val now = clock()
-        val recentlyTriggered = now - locationSource.lastRapidPollTrigger.value < 60_000L
-        // Bounded after backgrounding: a sheet left open must not hold 2 s polls (and block the
-        // idle stop) forever. The mark is taken at the background transition; foregrounding re-arms.
+        // The repository keeps the background mark as a monotonic TimeMark; the policy wants a
+        // timestamp on this poller's clock (the same one the other stamps use).
         val backgroundedAt = locationSource.appBackgroundedAt.value
-        val visibleOrRecent =
-            locationSource.isAppInForeground.value ||
-                (backgroundedAt != null && backgroundedAt.elapsedNow() < PENDING_INIT_RAPID_TIMEOUT_MS.milliseconds)
-        val isSheetShowing = visibleOrRecent && uiStateStore.isInviteSheetShowing.value
-        val isNaming = visibleOrRecent && uiStateStore.pendingQrForNaming.value != null
-        // Bounded: an incoming invite that's never confirmed or cancelled (app backgrounded,
-        // notification ignored, etc.) must not pin the client at the 2s rapid interval forever.
         val setAt = locationSource.pendingInitPayloadSetAt.value
-        val hasFreshPendingInit =
-            locationSource.pendingInitPayload.value != null && setAt != 0L && now - setAt < PENDING_INIT_RAPID_TIMEOUT_MS
-        return isSheetShowing || hasFreshPendingInit || recentlyTriggered || isNaming
+        val trigger = locationSource.lastRapidPollTrigger.value
+        return PollPolicy.isRapid(
+            PollPolicy.State(
+                appForeground = locationSource.isAppInForeground.value,
+                backgroundedAtMs = backgroundedAt?.let { now - it.elapsedNow().inWholeMilliseconds },
+                inviteSheetShowing = uiStateStore.isInviteSheetShowing.value,
+                pendingQrForNaming = uiStateStore.pendingQrForNaming.value != null,
+                pendingInitSetAtMs = setAt.takeIf { locationSource.pendingInitPayload.value != null && it != 0L },
+                lastRapidTriggerMs = trigger.takeIf { it != 0L },
+            ),
+            now,
+        )
     }
 
     /** Surfaces incoming handshakes. Returns true if it reported an error to the UI. */
@@ -201,8 +201,9 @@ internal class FriendPoller(
          * Bounds the impact of an invite the user never acts on (see #336) - long enough
          * to notice and respond to a notification, short enough not to run rapid mode forever.
          */
-        internal const val PENDING_INIT_RAPID_TIMEOUT_MS = 5 * 60 * 1000L
-        internal const val RAPID_POLL_INTERVAL_MS = 2_000L
-        internal const val FOREGROUND_POLL_INTERVAL_MS = 10_000L
+        internal const val PENDING_INIT_RAPID_TIMEOUT_MS = PollPolicy.PENDING_INIT_BOUND_MS
+        internal const val BACKGROUND_INVITE_WINDOW_MS = PollPolicy.BACKGROUND_INVITE_WINDOW_MS
+        internal const val RAPID_POLL_INTERVAL_MS = PollPolicy.RAPID_INTERVAL_MS
+        internal const val FOREGROUND_POLL_INTERVAL_MS = PollPolicy.FOREGROUND_INTERVAL_MS
     }
 }
