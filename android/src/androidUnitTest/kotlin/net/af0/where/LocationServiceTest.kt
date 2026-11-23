@@ -656,6 +656,137 @@ class LocationServiceTest {
             assertTrue(shadowOf(controller.get()).isStoppedBySelf)
         }
 
+    /** Delay until the next scheduled AlarmManager alarm, in ms. */
+    private fun nextAlarmIn(): Long {
+        val alarms = shadowOf(context.getSystemService(android.app.AlarmManager::class.java))
+        return alarms.peekNextScheduledAlarm()!!.triggerAtTime - android.os.SystemClock.elapsedRealtime()
+    }
+
+    private fun assertAlarmIn(
+        expectedMs: Long,
+        message: String,
+    ) {
+        val actual = nextAlarmIn()
+        assertTrue(actual in (expectedMs - 1_000)..expectedMs, "$message: alarm in $actual ms, expected ~$expectedMs")
+    }
+
+    private fun fireDozeAlarm(controller: ServiceController<LocationService>) {
+        val alarm = Intent(context, LocationService::class.java).apply { action = LocationService.ACTION_POLL_ALARM }
+        controller.withIntent(alarm).startCommand(0, 2)
+    }
+
+    /**
+     * Backgrounding alone (no other wake) starts the grace and arms an alarm for its end, without
+     * polling on the way out, so the service stops ~30 s later rather than at the 10-min doze
+     * alarm the last foreground poll set.
+     */
+    @Test
+    fun notSharing_backgrounding_stopsWhenTheGraceEnds_notAtTheDozeAlarm() =
+        runTest {
+            var now = 1_000_000L
+            LocationService.elapsedClock = { now }
+            (context as TestWhereApplication).userStore.setSharing(false)
+            fakeLocationSource.setAppForeground(true)
+            val (controller, mockClient) = buildServiceWithFriend()
+            controller.create()
+            advanceUntilIdle()
+            assertTrue(nextAlarmIn() >= LocationService.DOZE_ALARM_INTERVAL_MS, "foreground: 10-min safety-net alarm")
+            val polls = io.mockk.mockk<() -> Unit>(relaxed = true)
+            io.mockk.coEvery { mockClient.poll(any(), any(), any()) } answers {
+                polls()
+                emptyList()
+            }
+
+            // onPause only: nothing else wakes the loop with the screen off.
+            fakeLocationSource.setAppForeground(false)
+            advanceUntilIdle()
+            assertFalse(shadowOf(controller.get()).isStoppedBySelf, "within the grace period")
+            assertAlarmIn(LocationService.BACKGROUND_STOP_GRACE_MS, "armed for the end of the grace")
+
+            now += LocationService.BACKGROUND_STOP_GRACE_MS
+            fireDozeAlarm(controller)
+            advanceUntilIdle()
+            assertTrue(shadowOf(controller.get()).isStoppedBySelf)
+            io.mockk.verify(exactly = 0) { polls() }
+        }
+
+    /** A visit too short for the loop to see (QR scanner, say) re-arms a full grace. */
+    @Test
+    fun notSharing_shortVisitInBackground_rearmsAFullGrace() =
+        runTest {
+            var now = 1_000_000L
+            LocationService.elapsedClock = { now }
+            (context as TestWhereApplication).userStore.setSharing(false)
+            fakeLocationSource.setAppForeground(true)
+            val (controller, _) = buildServiceWithFriend()
+            controller.create()
+            advanceUntilIdle()
+            fakeLocationSource.setAppForeground(false)
+            advanceUntilIdle()
+
+            now += 20_000
+            fakeLocationSource.setAppForeground(true)
+            fakeLocationSource.setAppForeground(false)
+            advanceUntilIdle()
+            assertAlarmIn(LocationService.BACKGROUND_STOP_GRACE_MS, "a fresh grace from the visit")
+
+            now += LocationService.BACKGROUND_STOP_GRACE_MS
+            fireDozeAlarm(controller)
+            advanceUntilIdle()
+            assertTrue(shadowOf(controller.get()).isStoppedBySelf)
+        }
+
+    /** Backgrounding while pairing keeps the rapid-poll alarm (one PendingIntent for both). */
+    @Test
+    fun notSharing_backgroundingWhileRapidPolling_keepsTheRapidAlarm() =
+        runTest {
+            (context as TestWhereApplication).userStore.setSharing(false)
+            fakeLocationSource.setAppForeground(true)
+            fakeLocationSource.triggerRapidPoll()
+            val (controller, _) = buildServiceWithFriend()
+            controller.create()
+            runCurrent()
+            assertAlarmIn(FriendPoller.RAPID_POLL_INTERVAL_MS, "rapid polling")
+
+            fakeLocationSource.setAppForeground(false)
+            runCurrent()
+            assertFalse(shadowOf(controller.get()).isStoppedBySelf)
+            assertAlarmIn(FriendPoller.RAPID_POLL_INTERVAL_MS, "still the rapid interval")
+        }
+
+    /** Sharing turned off while in the background arms the stop for what's left of the grace. */
+    @Test
+    fun sharingTurnedOffInBackground_stopsWhenTheGraceEnds_notAtTheNextPoll() =
+        runTest {
+            var now = 1_000_000L
+            LocationService.elapsedClock = { now }
+            val app = context as TestWhereApplication
+            fakeLocationSource.setAppForeground(true)
+            val (controller, mockClient) = buildServiceWithFriend()
+            controller.create()
+            advanceUntilIdle()
+            fakeLocationSource.setAppForeground(false)
+            advanceUntilIdle()
+            assertFalse(shadowOf(controller.get()).isStoppedBySelf, "sharing: stays in the background")
+            val polls = io.mockk.mockk<() -> Unit>(relaxed = true)
+            io.mockk.coEvery { mockClient.poll(any(), any(), any()) } answers {
+                polls()
+                emptyList()
+            }
+
+            now += 10_000
+            app.userStore.setSharing(false)
+            advanceUntilIdle()
+            assertFalse(shadowOf(controller.get()).isStoppedBySelf, "rest of the grace")
+            assertAlarmIn(LocationService.BACKGROUND_STOP_GRACE_MS - 10_000, "armed for the rest of the grace")
+
+            now += LocationService.BACKGROUND_STOP_GRACE_MS - 10_000
+            fireDozeAlarm(controller)
+            advanceUntilIdle()
+            assertTrue(shadowOf(controller.get()).isStoppedBySelf)
+            io.mockk.verify(exactly = 0) { polls() }
+        }
+
     /**
      * Starts a service with sharing off in the background, its idle stop waiting on a sync. The
      * tests use runCurrent, not advanceUntilIdle, while a sync is pending: advancing virtual time

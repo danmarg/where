@@ -32,7 +32,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
@@ -184,8 +186,8 @@ class LocationService : Service() {
     // The poll loop's last view of the foreground, to spot the app leaving it.
     private var wasInForeground = false
 
-    // [elapsedClock] time pollLoop saw the app go to the background (or the idle stop called off);
-    // 0 if neither happened.
+    // [elapsedClock] time the app last left the foreground, as onCreate's collector saw it (or the
+    // idle stop was called off); 0 if neither happened.
     private var backgroundedAt = 0L
 
     @VisibleForTesting
@@ -414,6 +416,31 @@ class LocationService : Service() {
                 updateNotification()
                 ensureLocationRegistration()
             }
+        }
+        serviceScope.launch {
+            // Sharing turned off in the background: the idle stop is due now (or once the grace
+            // runs out), not at the next 5-min poll. (Revoking location permission kills the
+            // process, so there is no such edge for it.)
+            userStore.isSharingLocation.drop(1).collect { if (!it) armIdleStopAlarm() }
+        }
+        // Taken now, not when the collector below first runs (serviceScope isn't immediate): an
+        // edge in between is a real one.
+        val initialVisibility = locationSource.isAppInForeground.value to locationSource.foregroundEntries.value
+        serviceScope.launch {
+            // Leaving the foreground (or a visit too short for this to see, which still bumps
+            // foregroundEntries) starts the idle stop's grace now. With nothing to share, the alarm
+            // for its end is armed here, while the CPU is still up, without a poll; that alarm takes
+            // the poll wake lock and wakes the loop to stop. Otherwise the loop sleeps out the
+            // foreground interval and, with the screen off, first sees it at the 10-min doze alarm.
+            // foregroundEntries only grows, so only the first emission can equal the snapshot.
+            combine(locationSource.isAppInForeground, locationSource.foregroundEntries) { visible, entries -> visible to entries }
+                .filter { it != initialVisibility }
+                .collect { (visible, _) ->
+                    if (!visible) {
+                        backgroundedAt = elapsedClock()
+                        armIdleStopAlarm()
+                    }
+                }
         }
         serviceScope.launch {
             locationSource.friends.collect { ensureLocationRegistration() }
@@ -847,7 +874,6 @@ class LocationService : Service() {
             locationSource.onFriendsUpdated(e2eeManager.listFriends())
             locationSource.onPendingInvitesUpdated(e2eeManager.listPendingInvites())
         }
-        var seenForegroundEntries = locationSource.foregroundEntries.value
         // The loop continues until serviceScope is cancelled in onDestroy().
         while (true) {
             val rapid = isRapidPolling()
@@ -859,14 +885,6 @@ class LocationService : Service() {
                 return
             }
             val justBackgrounded = wasInForeground && !inForeground
-            if (justBackgrounded) backgroundedAt = elapsedClock()
-            // A visit since the last iteration, even one already over (the QR scanner, say), while
-            // this loop was busy polling or waiting: restart the grace below as well.
-            val foregroundEntries = locationSource.foregroundEntries.value
-            if (foregroundEntries != seenForegroundEntries) {
-                seenForegroundEntries = foregroundEntries
-                backgroundedAt = elapsedClock()
-            }
             // Not sharing and not visible: nothing left here needs a foreground service. The
             // worker keeps up acks and keepalives without the notification (#481); opening the
             // app or turning sharing on starts the service again. Not straight after the app
@@ -876,14 +894,14 @@ class LocationService : Service() {
             if (idle && stopGraceLeft <= 0) {
                 // onDestroy cancels serviceScope: let every reconnect's acks and outbox flush
                 // finish first. If the app is opened or sharing turned on meanwhile, a start
-                // command saw this loop alive and left it running: carry on instead (the top of
-                // the loop restarts the grace for a visit that is already over).
+                // command saw this loop alive and left it running: carry on instead (a visit
+                // that is already over has restarted the grace, see onCreate).
                 val drained = awaitNetworkSyncs()
                 if (drained == null) {
                     // Stuck or flapping: don't stop this time; poll and try again next iteration.
                     Log.w(TAG, "Network syncs still running after ${NETWORK_SYNC_WAIT_MS / 1000}s; not stopping yet.")
                 } else if (drained &&
-                    locationSource.foregroundEntries.value == seenForegroundEntries &&
+                    backgroundedAt + BACKGROUND_STOP_GRACE_MS - elapsedClock() <= 0 &&
                     !locationSource.isAppInForeground.value &&
                     !isRapidPolling() &&
                     !needsBackgroundService(userStore)
@@ -1008,7 +1026,11 @@ class LocationService : Service() {
             // foreground service is alive; the alarm is the dead-service safety net.
             // Also tight for a pending idle stop: the coroutine timer doesn't run while the CPU
             // sleeps, and the notification would stay up until the next 9-min alarm.
-            scheduleDozeAlarm(if (rapid || idle) interval else maxOf(DOZE_ALARM_INTERVAL_MS, interval))
+            val alarmIn = if (rapid || idle) interval else maxOf(DOZE_ALARM_INTERVAL_MS, interval)
+            // Nor later than an idle stop armed while this iteration ran (onCreate's collectors).
+            // Not while rapid polling, which keeps its tight interval and isn't an idle stop.
+            val graceAlarmIn = if (rapid) null else idleStopAlarmIn(idle)
+            scheduleDozeAlarm(if (graceAlarmIn != null) minOf(alarmIn, graceAlarmIn) else alarmIn)
             // All work for this wake is complete. Release the wake lock now so we don't hold
             // it across the entire sleep interval (could be 10+ min in background).
             if (pollWakeLock.isHeld) pollWakeLock.release()
@@ -1203,6 +1225,36 @@ class LocationService : Service() {
     // Coalesced against an identical previous event: indoor walking can cycle stationary mode
     // several times an hour.
     private fun diagnostic(message: String) = e2eeManager.addDiagnosticEvent(message, message)
+
+    /** Time left in the idle stop's grace, or null while something needs the service. */
+    private fun idleStopGraceLeft(): Long? =
+        if (locationSource.isAppInForeground.value || needsBackgroundService(userStore)) {
+            null
+        } else {
+            backgroundedAt + BACKGROUND_STOP_GRACE_MS - elapsedClock()
+        }
+
+    /**
+     * When pollLoop's alarm must fire for the idle stop: at the end of the grace (at once if it is
+     * over), or null if nothing is pending. For an iteration that was itself [idle] and still
+     * didn't stop (a sync wait timed out), not once the grace is over: an alarm due now would spin.
+     */
+    private fun idleStopAlarmIn(idle: Boolean): Long? =
+        idleStopGraceLeft()?.let { left -> if (idle) left.takeIf { it > 0 } else left.coerceAtLeast(0) }
+
+    /**
+     * Arms the doze alarm for the end of the idle stop's grace (at once if it is over), when
+     * nothing needs the service. Its ACTION_POLL_ALARM takes the poll wake lock and wakes pollLoop,
+     * which stops. Exact: at 30 s after screen-off the device isn't in Doze yet, so the
+     * allow-while-idle minimum doesn't defer it. Best effort: where exact alarms are refused (the
+     * inexact fallback in [scheduleDozeAlarm]) or the allow-while-idle quota is spent, it can
+     * land late, as late as the old next-poll stop. Not while rapid polling: the alarm shares one
+     * PendingIntent with the loop's, and would replace its 2 s one.
+     */
+    private suspend fun armIdleStopAlarm() {
+        if (isRapidPolling()) return
+        idleStopGraceLeft()?.let { scheduleDozeAlarm(it.coerceAtLeast(0)) }
+    }
 
     private fun scheduleDozeAlarm(delayMs: Long) {
         val intent = Intent(this, LocationService::class.java).apply { action = ACTION_POLL_ALARM }
