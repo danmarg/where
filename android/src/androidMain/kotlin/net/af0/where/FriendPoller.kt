@@ -111,7 +111,7 @@ internal class FriendPoller(
 
     /**
      * True while something needs a fast poll: the share sheet is open or Bob is on the naming
-     * screen (while visible, and for [PENDING_INIT_RAPID_TIMEOUT_MS] after the app is
+     * screen (while visible, and for [BACKGROUND_INVITE_WINDOW_MS] after the app is
      * backgrounded, since sharing the link leaves the app just as Bob scans), a fresh incoming
      * invite awaits Alice's confirmation, or rapid polling was recently requested.
      */
@@ -202,6 +202,7 @@ internal class FriendPoller(
          * to notice and respond to a notification, short enough not to run rapid mode forever.
          */
         internal const val PENDING_INIT_RAPID_TIMEOUT_MS = PollPolicy.PENDING_INIT_BOUND_MS
+        internal const val BACKGROUND_INVITE_WINDOW_MS = PollPolicy.BACKGROUND_INVITE_WINDOW_MS
         internal const val RAPID_POLL_INTERVAL_MS = PollPolicy.RAPID_INTERVAL_MS
         internal const val FOREGROUND_POLL_INTERVAL_MS = PollPolicy.FOREGROUND_INTERVAL_MS
     }

@@ -238,14 +238,12 @@ class LocationServiceTest {
 
     @Test
     fun testPollInterval_Foreground_Is10s() {
-        val service = Robolectric.buildService(LocationService::class.java).get()
-        assertEquals(10_000L, service.pollInterval(rapid = false, inForeground = true))
+        assertEquals(10_000L, PollPolicy.intervalMs(rapid = false, appForeground = true))
     }
 
     @Test
     fun testPollInterval_Background_Is5min() {
-        val service = Robolectric.buildService(LocationService::class.java).get()
-        assertEquals(5 * 60 * 1000L, service.pollInterval(rapid = false, inForeground = false))
+        assertEquals(5 * 60 * 1000L, PollPolicy.intervalMs(rapid = false, appForeground = false))
     }
 
     @Test
@@ -867,6 +865,18 @@ class LocationServiceTest {
 
             third.complete()
             runCurrent()
+            assertTrue(shadowOf(controller.get()).isStoppedBySelf)
+        }
+
+    /** The last friend removed while the idle stop waits for a sync: the wait ends and the service stops. */
+    @Test
+    fun idleStop_lastFriendRemovedDuringTheSync_stops() =
+        runTest {
+            val (controller, _, _) = serviceWaitingOnSync()
+
+            fakeLocationSource.onFriendsUpdated(emptyList())
+            runCurrent()
+
             assertTrue(shadowOf(controller.get()).isStoppedBySelf)
         }
 

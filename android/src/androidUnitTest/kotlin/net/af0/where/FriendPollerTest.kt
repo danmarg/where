@@ -327,7 +327,7 @@ class FriendPollerTest {
 
         // Sharing the link leaves the app; Bob may scan minutes later.
         source.setAppForeground(false)
-        source.timeSource += (FriendPoller.PENDING_INIT_RAPID_TIMEOUT_MS - 1).milliseconds
+        source.timeSource += (FriendPoller.BACKGROUND_INVITE_WINDOW_MS - 1).milliseconds
         assertTrue(poller.isRapidPolling(), "rapid polling holds shortly after backgrounding")
 
         // An hour later, with no call in between: the window ran from the transition.

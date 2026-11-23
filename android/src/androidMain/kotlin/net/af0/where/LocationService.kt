@@ -239,12 +239,11 @@ class LocationService : Service() {
         }
     }
 
-    // Tracks pollLoop()'s coroutine so onStartCommand can detect and recover from the case
-    // where the loop has exited (e.g. via its own stopSelf() on the no-friends path) but this
-    // Service instance is still alive because a racing startForegroundService() call landed
-    // before Android finished tearing it down. stopSelf() is asynchronous and can be
-    // superseded by a later start command; when that happens onCreate()/onDestroy() never
-    // re-run, so nothing else would ever relaunch pollLoop.
+    // Tracks pollLoop()'s coroutine. The loop stops with stopSelfResult(lastStartId), which the
+    // system refuses if a newer start command was delivered; the loop then carries on. This is the
+    // backstop for the remaining race: the loop exited (its stop was accepted) but a start command
+    // still reached this instance before teardown finished. onCreate()/onDestroy() don't re-run
+    // then, so onStartCommand relaunches pollLoop when it finds the job completed.
     private var pollLoopJob: Job? = null
 
     private fun ensurePollLoopRunning() {
@@ -447,8 +446,15 @@ class LocationService : Service() {
             userStore.isSharingLocation.drop(1).collect { events.trySend(ServiceEvent.StateChanged) }
         }
         serviceScope.launch {
-            merge(locationSource.lastRapidPollTrigger.drop(1), locationSource.pendingInitPayload.drop(1))
-                .collect { events.trySend(ServiceEvent.StateChanged) }
+            // Everything else the policy reads: rapid mode's inputs and whether anyone is left.
+            merge(
+                locationSource.lastRapidPollTrigger.drop(1),
+                locationSource.pendingInitPayload.drop(1),
+                uiStateStore.isInviteSheetShowing.drop(1),
+                uiStateStore.pendingQrForNaming.drop(1),
+                locationSource.friends.drop(1),
+                locationSource.allPendingInvites.drop(1),
+            ).collect { events.trySend(ServiceEvent.StateChanged) }
         }
         // Taken now, not when the collectors below first run (serviceScope isn't immediate): an
         // edge in between is a real one.
@@ -903,10 +909,10 @@ class LocationService : Service() {
     /**
      * Waits for the reconnect syncs in flight (including ones started meanwhile) until the policy
      * no longer asks for it (they ended, or something needs the service again): true; false after
-     * [ServicePolicy.NETWORK_SYNC_WAIT_MS].
+     * [maxWaitMs].
      */
-    private suspend fun awaitSyncs(): Boolean =
-        withTimeoutOrNull(ServicePolicy.NETWORK_SYNC_WAIT_MS) {
+    private suspend fun awaitSyncs(maxWaitMs: Long): Boolean =
+        withTimeoutOrNull(maxWaitMs) {
             while (decideNow(false) is ServicePolicy.Decision.AwaitSyncs) applyEvent(events.receive())
             true
         } ?: false
@@ -917,9 +923,16 @@ class LocationService : Service() {
      */
     private suspend fun stopFromLoop(): Boolean {
         if (stopSelfResult(lastStartId)) return true
-        delay(STOP_RETRY_MS)
+        // Backs off (50 ms doubling to 5 s) so a start command that is slow to be delivered, or a
+        // service the system won't stop, can't spin the loop; onStartCommand's
+        // ensurePollLoopRunning stays the backstop for a loop that has exited.
+        delay((STOP_RETRY_MS shl stopRefusals.coerceAtMost(7)).coerceAtMost(STOP_RETRY_MAX_MS))
+        stopRefusals++
         return false
     }
+
+    // Consecutive refused stops; reset whenever the loop decides to keep running.
+    private var stopRefusals = 0
 
     /**
      * The one place the alarm is armed from a decision at the end of an iteration; also
@@ -944,7 +957,10 @@ class LocationService : Service() {
                     applyEvent(event)
                     when (val d = decideNow(syncWaitGaveUp)) {
                         is ServicePolicy.Decision.Run -> d.graceAlarmInMs?.let { armAlarm(it) }
-                        else -> decideAgain = true
+                        // An emptied friend list stops at the next wake, not by cutting the sleep.
+                        is ServicePolicy.Decision.Stop ->
+                            if (d.reason != ServicePolicy.StopReason.NO_RELATIONSHIPS) decideAgain = true
+                        is ServicePolicy.Decision.AwaitSyncs -> decideAgain = true
                     }
                 }
             }
@@ -954,7 +970,7 @@ class LocationService : Service() {
 
     private suspend fun pollLoop() {
         // On cold/headless restart the StateFlow starts empty — hydrate once before the
-        // first iteration so we don't stopSelf() before sending anything.
+        // first iteration so the "no friends" stop doesn't fire before anything was sent.
         if (locationSource.friends.value.isEmpty() && locationSource.allPendingInvites.value.isEmpty()) {
             locationSource.onFriendsUpdated(e2eeManager.listFriends())
             locationSource.onPendingInvitesUpdated(e2eeManager.listPendingInvites())
@@ -972,24 +988,30 @@ class LocationService : Service() {
             var run: ServicePolicy.Decision.Run? = null
             when (val decision = decideNow(false)) {
                 is ServicePolicy.Decision.Stop -> {
-                    Log.i(TAG, "Stopping service: ${decision.reason.text}")
-                    if (decision.reason != ServicePolicy.StopReason.NO_RELATIONSHIPS) {
-                        e2eeManager.addDiagnosticEvent("Service stopped: in background, ${decision.reason.text}")
+                    if (stopFromLoop()) {
+                        Log.i(TAG, "Stopping service: ${decision.reason.text}")
+                        if (decision.reason != ServicePolicy.StopReason.NO_RELATIONSHIPS) {
+                            e2eeManager.addDiagnosticEvent("Service stopped: in background, ${decision.reason.text}")
+                        }
+                        return
                     }
-                    if (stopFromLoop()) return
                     continue
                 }
                 // onDestroy cancels serviceScope: let every reconnect's acks and outbox flush
                 // finish first. If the app is opened or sharing turned on meanwhile, the policy
                 // no longer asks to wait and the loop carries on.
                 is ServicePolicy.Decision.AwaitSyncs -> {
-                    if (awaitSyncs()) continue
+                    if (awaitSyncs(decision.maxWaitMs)) continue
                     // Stuck or flapping: don't stop this time; poll and try again next iteration.
-                    Log.w(TAG, "Network syncs still running after ${ServicePolicy.NETWORK_SYNC_WAIT_MS / 1000}s; not stopping yet.")
+                    Log.w(TAG, "Network syncs still running after ${decision.maxWaitMs / 1000}s; not stopping yet.")
                     syncWaitGaveUp = true
                     run = decideNow(true) as? ServicePolicy.Decision.Run
                 }
-                is ServicePolicy.Decision.Run -> run = decision
+                is ServicePolicy.Decision.Run -> {
+                    run = decision
+                    stopRefusals = 0
+                    Log.d(TAG, "Running: ${decision.reason}, next poll in ${decision.pollIntervalMs}ms")
+                }
             }
             val plan = run ?: continue
             // Captured here so an iteration already running when the motion trigger fired
@@ -1086,15 +1108,26 @@ class LocationService : Service() {
                     sendScheduler.noteKeepalive(sent)
                 }
             }
-            // The one alarm backs the sleep. Changes during this iteration are queued events: the
-            // sleep applies them first, re-arming the alarm for a grace they start or cutting the
-            // sleep short when the service is now due to stop.
-            armAlarm(plan.alarmInMs)
+            // Decide again with the state after this iteration's work, so a slow poll can't leave
+            // a stale grace remainder: the alarm and the sleep come from this result. If the
+            // service is now due to stop (or wait for syncs), go straight back to the top. Not for
+            // "no friends": a poll that emptied the list sleeps on, as before, and the next wake stops.
+            val next =
+                when (val d = decideNow(syncWaitGaveUp)) {
+                    is ServicePolicy.Decision.Run -> d
+                    is ServicePolicy.Decision.Stop -> if (d.reason == ServicePolicy.StopReason.NO_RELATIONSHIPS) plan else null
+                    is ServicePolicy.Decision.AwaitSyncs -> null
+                }
+            // The one alarm backs the sleep.
+            if (next != null) armAlarm(next.alarmInMs)
             // All work for this wake is complete. Release the wake lock now so we don't hold
             // it across the entire sleep interval (could be 10+ min in background).
             if (pollWakeLock.isHeld) pollWakeLock.release()
             if (releaseMotionWakeLock && motionWakeLock.isHeld) motionWakeLock.release()
-            sleepUntilWake(plan.pollIntervalMs, syncWaitGaveUp)
+            if (next == null) continue
+            // Changes from here on are queued events: the sleep applies them first, re-arming the
+            // alarm for a grace they start or cutting the sleep short when the service is due to stop.
+            sleepUntilWake(next.pollIntervalMs, syncWaitGaveUp)
             cancelDozeAlarm()
         }
     }
@@ -1305,19 +1338,6 @@ class LocationService : Service() {
         if (pi != null) alarmManager.cancel(pi)
     }
 
-    @VisibleForTesting
-    internal fun pollInterval(
-        rapid: Boolean,
-        inForeground: Boolean,
-    ): Long =
-        when {
-            rapid -> PollPolicy.RAPID_INTERVAL_MS
-            inForeground -> PollPolicy.FOREGROUND_INTERVAL_MS
-            // Heartbeat + friend poll. Not sharing in the background, the service stops and the
-            // worker polls instead (LocationServiceRestartWorker.MAINTENANCE_POLL_INTERVAL_MS).
-            else -> PollPolicy.BACKGROUND_INTERVAL_MS
-        }
-
     private val friendPoller: FriendPoller by lazy {
         friendPollerOverride ?: FriendPoller(
             locationClient, e2eeManager, userStore, locationSource, uiStateStore,
@@ -1444,6 +1464,7 @@ class LocationService : Service() {
         // How long pollLoop waits before deciding again when stopSelfResult refused (a newer start
         // command was delivered).
         private const val STOP_RETRY_MS = 50L
+        private const val STOP_RETRY_MAX_MS = 5_000L
 
         const val ACTION_FORCE_PUBLISH = "net.af0.where.ACTION_FORCE_PUBLISH"
         const val ACTION_GEOFENCE_EVENT = "net.af0.where.ACTION_GEOFENCE_EVENT"
