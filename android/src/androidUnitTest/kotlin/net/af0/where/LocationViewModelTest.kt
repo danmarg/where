@@ -58,6 +58,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.TestTimeSource
+import kotlin.time.TimeMark
 
 private fun createTestSqlDriver(name: String? = null): SqlDriver {
     return AndroidSqliteDriver(
@@ -88,6 +90,10 @@ class TestFakeLocationSource(initialForeground: Boolean = false) : LocationSourc
 
     private val _foregroundEntries = MutableStateFlow(0)
     override val foregroundEntries: StateFlow<Int> = _foregroundEntries.asStateFlow()
+
+    val timeSource = TestTimeSource()
+    private val _appBackgroundedAt = MutableStateFlow<TimeMark?>(null)
+    override val appBackgroundedAt: StateFlow<TimeMark?> = _appBackgroundedAt.asStateFlow()
 
     private val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
     override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload.asStateFlow()
@@ -148,6 +154,11 @@ class TestFakeLocationSource(initialForeground: Boolean = false) : LocationSourc
 
     override fun setAppForeground(foreground: Boolean) {
         if (foreground && !_isAppInForeground.value) _foregroundEntries.value += 1
+        if (foreground) {
+            _appBackgroundedAt.value = null
+        } else if (_isAppInForeground.value) {
+            _appBackgroundedAt.value = timeSource.markNow()
+        }
         _isAppInForeground.value = foreground
     }
 

@@ -33,7 +33,7 @@
 - Server routes opaque encrypted payloads using pairwise routing tokens. To prevent clients from reading their own messages, each session uses separate `sendToken` / `recvToken` pairs symmetrically derived from the ratcheted root key using sender and recipient fingerprints.
 - Messages are encapsulated in standard Double Ratchet envelopes.
 - Clients maintain post-compromise security (PCS) mathematically through automated Keepalives even if only one user is sharing location.
-- Clients poll adaptively: every 2 s right after pairing/invite activity, 10 s in the foreground, 5 min in the background while sharing, ~30 min (ack/maintenance only) when not sharing. On Android that last one is `LocationServiceRestartWorker` polling directly: the foreground service (and its notification) stops once the app is backgrounded with sharing off (#481).
+- Clients poll adaptively: every 2 s right after pairing/invite activity (an open invite sheet, and on Android the naming screen, holds it while visible and for 5 min after the app is backgrounded), 10 s in the foreground, 5 min in the background while sharing, ~30 min (ack/maintenance only) when not sharing. On Android that last one is `LocationServiceRestartWorker` polling directly: the foreground service (and its notification) stops once the app is backgrounded with sharing off (#481).
 
 ### User identity
 - Identity is determined by the device key itself (ephemeral X25519 session keys).

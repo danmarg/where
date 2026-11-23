@@ -41,6 +41,8 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.milliseconds
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
@@ -311,12 +313,37 @@ class FriendPollerTest {
 
     @Test
     fun isRapidPolling_trueWhenInviteSheetShowing() {
+        source.setAppForeground(true)
         ui.setInviteSheetShowing(true)
         assertTrue(poller.isRapidPolling())
     }
 
     @Test
+    fun isRapidPolling_openInviteSheetStopsWhenBackgrounded() {
+        source.setAppForeground(true)
+        ui.setInviteSheetShowing(true)
+        ui.onPendingQrForNaming(mockk<QrPayload>(relaxed = true))
+        assertTrue(poller.isRapidPolling())
+
+        // Sharing the link leaves the app; Bob may scan minutes later.
+        source.setAppForeground(false)
+        source.timeSource += (FriendPoller.PENDING_INIT_RAPID_TIMEOUT_MS - 1).milliseconds
+        assertTrue(poller.isRapidPolling(), "rapid polling holds shortly after backgrounding")
+
+        // An hour later, with no call in between: the window ran from the transition.
+        source.timeSource += 1.hours
+        assertFalse(poller.isRapidPolling(), "a sheet left open in the background must not pin rapid polling")
+
+        // Foreground and back out again re-arms a fresh window.
+        source.setAppForeground(true)
+        assertTrue(poller.isRapidPolling())
+        source.setAppForeground(false)
+        assertTrue(poller.isRapidPolling(), "backgrounding again starts a fresh window")
+    }
+
+    @Test
     fun isRapidPolling_trueWhenNamingScannedQr() {
+        source.setAppForeground(true)
         ui.onPendingQrForNaming(mockk<QrPayload>(relaxed = true))
         assertTrue(poller.isRapidPolling())
     }

@@ -116,6 +116,8 @@ final class LocationSyncService: ObservableObject {
     var isInviteActive: Bool { isInviteSheetShowing }
     var skipUpdateVisibleUsers: Bool = false
 
+    /// When the app entered the .background scene phase; nil once active again. Internal for testing.
+    var leftActiveAt: Date?
     var lastRapidPollTrigger: Date = Date(timeIntervalSince1970: 0)  // internal for testing
     var lastPollTime: Date = Date(timeIntervalSince1970: 0)  // internal for testing
     private var lastCleanupTime: Date = Date(timeIntervalSince1970: 0)
@@ -140,6 +142,8 @@ final class LocationSyncService: ObservableObject {
     /// move to be sent is the send scheduler's policy, shared with Android.)
     static let minimumReportingDistanceMeters: CLLocationDistance = 200
     private static let rapidPollDuration: TimeInterval = 60.0
+    /// How long an open invite sheet keeps rapid polling after the app leaves .active (mirrors Android's 5 min).
+    static let inviteSheetBackgroundRapidWindow: TimeInterval = 300.0
     /// How long a newly-added friend who hasn't sent their first location update keeps the
     /// client in rapid (2s) polling. Bounds the impact of a friend who never shares (see #336) -
     /// long enough for a normal first exchange, short enough not to run rapid mode forever.
@@ -639,7 +643,12 @@ final class LocationSyncService: ObservableObject {
         pollTimer?.fire()
     }
 
+    func onBackgroundEntry() {
+        leftActiveAt = Date()
+    }
+
     func onForegroundEntry() {
+        leftActiveAt = nil
         guard databaseOpenError == nil else { return }
         // Reset lastPollTime to .distantPast so tick() bypasses its interval guard and fires
         // a poll immediately. A stuck isPollInFlight is handled by pollAll()'s watchdog task.
@@ -713,7 +722,13 @@ final class LocationSyncService: ObservableObject {
         if awaitingFirstUpdateIds.values.contains(where: { Date().timeIntervalSince($0) < Self.awaitingFirstUpdateTimeout }) {
             return true
         }
-        if isInviteSheetShowing { return true }
+        // While visible and for a bounded window after the app went to the background (sharing the
+        // link leaves the app just as the friend scans). A sheet left open must not poll at 2 s forever.
+        // leftActiveAt is set on the .background scene phase (not .inactive blips) and cleared on .active.
+        if isInviteSheetShowing,
+           leftActiveAt.map({ Date().timeIntervalSince($0) < Self.inviteSheetBackgroundRapidWindow }) ?? true {
+            return true
+        }
         return Date().timeIntervalSince(lastRapidPollTrigger) < Self.rapidPollDuration
     }
 

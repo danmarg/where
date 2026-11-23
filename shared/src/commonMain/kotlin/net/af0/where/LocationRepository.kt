@@ -17,6 +17,8 @@ import net.af0.where.e2ee.PendingInviteView
 import net.af0.where.e2ee.UserStore
 import net.af0.where.model.UserLocation
 import net.af0.where.shared.MR
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 
 /** Minimal interface over the shared location state, making it injectable for tests. */
 interface LocationSource {
@@ -28,6 +30,9 @@ interface LocationSource {
 
     /** How many times [isAppInForeground] has turned true: shows a visit that has already ended. */
     val foregroundEntries: StateFlow<Int>
+
+    /** Monotonic mark of when [isAppInForeground] last turned false; null while visible or never visible. */
+    val appBackgroundedAt: StateFlow<TimeMark?>
     val pendingInitPayload: StateFlow<KeyExchangeInitPayload?>
 
     /** Wall-clock time [pendingInitPayload] was last set to a non-null value; 0 when null. */
@@ -94,6 +99,7 @@ interface LocationSource {
  */
 class LocationRepository(
     private val userStore: UserStore,
+    private val timeSource: TimeSource.WithComparableMarks = TimeSource.Monotonic,
 ) : LocationSource {
     private val _lastLocation = MutableStateFlow<Triple<Double, Double, Double?>?>(null)
     override val lastLocation: StateFlow<Triple<Double, Double, Double?>?> = _lastLocation.asStateFlow()
@@ -112,6 +118,9 @@ class LocationRepository(
 
     private val _foregroundEntries = MutableStateFlow(0)
     override val foregroundEntries: StateFlow<Int> = _foregroundEntries.asStateFlow()
+
+    private val _appBackgroundedAt = MutableStateFlow<TimeMark?>(null)
+    override val appBackgroundedAt: StateFlow<TimeMark?> = _appBackgroundedAt.asStateFlow()
 
     private val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
     override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload.asStateFlow()
@@ -186,7 +195,15 @@ class LocationRepository(
 
     override fun setAppForeground(foreground: Boolean) {
         if (foreground && !_isAppInForeground.value) _foregroundEntries.update { it + 1 }
-        _isAppInForeground.value = foreground
+        // Order so a concurrent reader never sees "not foreground, no mark": the mark goes up before
+        // the flag drops, and comes down after the flag is raised.
+        if (foreground) {
+            _isAppInForeground.value = true
+            _appBackgroundedAt.value = null
+        } else {
+            if (_isAppInForeground.value) _appBackgroundedAt.value = timeSource.markNow()
+            _isAppInForeground.value = false
+        }
     }
 
     override fun onPendingInit(
@@ -259,6 +276,7 @@ class LocationRepository(
         _connectionStatus.value = ConnectionStatus.Ok
         _isAppInForeground.value = false
         _foregroundEntries.value = 0
+        _appBackgroundedAt.value = null
         _pendingInitPayload.value = null
         _pendingInitPayloadSetAt.value = 0L
         _pendingInitAliceEkPub.value = null
