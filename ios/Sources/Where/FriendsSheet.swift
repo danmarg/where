@@ -229,11 +229,6 @@ private struct FriendInfoColumn: View {
                     .font(.caption)
                     .foregroundStyle(.red)
             }
-            if friend.lastDecryptFailed {
-                Text(MR.strings().decryption_error_warning.localized())
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
             if let exp = expiresAt {
                 // nowTick is a property input; SwiftUI re-evaluates this body whenever
                 // the parent sheet bumps the ticker, so the remaining-time label stays current.

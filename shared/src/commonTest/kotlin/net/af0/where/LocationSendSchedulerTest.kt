@@ -71,7 +71,7 @@ class LocationSendSchedulerTest {
 
     private fun TestScope.harness() = Harness(this, backgroundScope)
 
-    // ~1.1 km per step, comfortably past the 100 m filter.
+    // ~1.1 km per step, comfortably past the 200 m filter.
     private fun far(i: Int) = 37.0 + i * 0.01
 
     @Test
@@ -113,11 +113,11 @@ class LocationSendSchedulerTest {
             }
             advanceTimeBy(60_000L)
             runCurrent()
-            assertEquals(1, h.sender.sent.size, "under 100 m: nothing before the heartbeat")
+            assertEquals(1, h.sender.sent.size, "under 200 m: nothing before the heartbeat")
 
-            h.scheduler.onFix(37.0 + 0.0014, -122.0) // ~155 m from the delivered fix
+            h.scheduler.onFix(37.0 + 0.0023, -122.0) // ~255 m from the delivered fix
             runCurrent()
-            assertEquals(2, h.sender.sent.size, "past 100 m: sent once the interval allows")
+            assertEquals(2, h.sender.sent.size, "past 200 m: sent once the interval allows")
         }
 
     @Test

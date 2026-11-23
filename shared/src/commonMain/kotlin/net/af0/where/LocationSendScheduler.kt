@@ -25,11 +25,11 @@ data class SendPolicy(
     /** How early a wake may arm the heartbeat, to absorb timer jitter. */
     val heartbeatSlackMs: Long = 30_000L,
     /**
-     * A fix this far from the last delivered one is worth sending before the heartbeat: about a
-     * block, so a walker's pin updates roughly once a minute. Not much lower: urban GPS jitter
-     * of 20-50 m would then look like movement.
+     * A fix this far from the last delivered one is worth sending before the heartbeat: 200 m,
+     * the same as the 200 m distance filter the platforms request fixes with (a lower value would
+     * never fire). Not much lower: urban GPS jitter of 20-50 m would look like movement.
      */
-    val minDistanceMeters: Double = 100.0,
+    val minDistanceMeters: Double = 200.0,
     /** Fixes less accurate than this are ignored: their jitter could pass for movement. */
     val maxAccuracyMeters: Double = 100.0,
     /** Delays before the retries of a failed send. */

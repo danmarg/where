@@ -26,7 +26,6 @@
     <string name="h_ago">%d時間前</string>
     <string name="d_ago">%d日前</string>
     <string name="stale_friend_warning">この友だちはしばらく確認されていません — 安全のため共有を一時停止しました</string>
-    <string name="decryption_error_warning">セキュリティエラー — この友だちからのメッセージを復号できませんでした</string>
     <string name="rename">名前を変更</string>
     <string name="resume">再開</string>
     <string name="pause">一時停止</string>

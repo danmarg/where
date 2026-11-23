@@ -46,8 +46,6 @@ data class FriendEntry(
     val isConfirmed: Boolean = false,
     val lastSentTs: Long = 0L,
     val lastPollTs: Long = 0L,
-    val sharingEnabled: Boolean = true,
-    val lastDecryptFailed: Boolean = false,
     val version: Int = 0,
     val isCaughtUp: Boolean = false,
     /** Epoch-seconds the peer first reported `stationary=true` in the current run. Null when moving. */

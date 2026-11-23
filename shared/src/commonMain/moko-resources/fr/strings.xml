@@ -26,7 +26,6 @@
     <string name="h_ago">il y a %d h</string>
     <string name="d_ago">il y a %d j</string>
     <string name="stale_friend_warning">Cet ami n\'a pas été vu récemment — partage suspendu par sécurité</string>
-    <string name="decryption_error_warning">Erreur de sécurité — impossible de déchiffrer les messages de cet ami</string>
     <string name="rename">Renommer</string>
     <string name="resume">Reprendre</string>
     <string name="pause">Pause</string>

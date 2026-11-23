@@ -26,7 +26,6 @@
     <string name="h_ago">há %d h</string>
     <string name="d_ago">há %d d</string>
     <string name="stale_friend_warning">Este amigo não foi visto recentemente — compartilhamento pausado por segurança</string>
-    <string name="decryption_error_warning">Erro de segurança — não foi possível descriptografar as mensagens deste amigo</string>
     <string name="rename">Renomear</string>
     <string name="resume">Retomar</string>
     <string name="pause">Pausar</string>

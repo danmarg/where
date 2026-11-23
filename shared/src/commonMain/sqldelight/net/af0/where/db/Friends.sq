@@ -19,8 +19,8 @@ CREATE TABLE Friends (
 
 -- Friends Queries
 insertFriend:
-INSERT OR REPLACE INTO Friends(id, name, sessionBlob, isInitiator, lastLat, lastLng, lastTs, lastRecvTs, isConfirmed, lastSentTs, lastPollTs, sharingEnabled, lastDecryptFailed, version, stationarySinceTs, stoppedAtTs)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT OR REPLACE INTO Friends(id, name, sessionBlob, isInitiator, lastLat, lastLng, lastTs, lastRecvTs, isConfirmed, lastSentTs, lastPollTs, version, stationarySinceTs, stoppedAtTs)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 deleteFriend:
 DELETE FROM Friends WHERE id = ?;
