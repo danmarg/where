@@ -511,8 +511,7 @@ open class LocationClient(
             }
 
             try {
-                store.updateLastPollTs(friendId, currentTimeSeconds())
-                store.updateIsCaughtUp(friendId, caughtUp)
+                store.updatePollState(friendId, currentTimeSeconds(), caughtUp)
             } catch (e: Exception) {
             }
 

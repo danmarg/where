@@ -561,7 +561,8 @@ class E2eeManager(
                     LocationPlaintext(lat = it.lat, lng = it.lng, acc = it.acc, ts = clampTs(it.ts), stationary = it.stationary)
                 }
             val stoppedSharingTs = delivered.filterIsInstance<MessagePlaintext.StoppedSharing>().maxOfOrNull { it.ts }?.let { clampTs(it) }
-            val lastLocation = decryptedLocations.lastOrNull()
+            // Newest by ts; on a tie the later frame wins (delivery order).
+            val lastLocation = decryptedLocations.withIndex().maxWithOrNull(compareBy({ it.value.ts }, { it.index }))?.value
             val storedLastTs = entry.lastTs?.takeIf { it <= maxTs } ?: 0
 
             // In the same transaction as the new session (see ProtocolCore's atomicity contract).
@@ -607,6 +608,10 @@ class E2eeManager(
                     lastLng = if (lastLocation != null && (lastLocation.ts >= storedLastTs)) lastLocation.lng else entry.lastLng,
                     lastTs = if (lastLocation != null && (lastLocation.ts >= storedLastTs)) lastLocation.ts else entry.lastTs,
                     lastPollTs = currentTimeSeconds(),
+                    // A non-empty batch means the mailbox may hold more: only a later empty poll
+                    // (see updatePollState) says caught up, so a failed poll can't leave a stale true
+                    // beside this fresh lastPollTs.
+                    isCaughtUp = false,
                     stationarySinceTs = newStationarySinceTs,
                     stoppedAtTs = newStoppedAtTs,
                 )
@@ -646,26 +651,15 @@ class E2eeManager(
         }
     }
 
-    suspend fun updateLastPollTs(
+    /** Records a finished poll: both fields in one transaction, so they never disagree. */
+    suspend fun updatePollState(
         id: String,
         ts: Long,
-    ) {
-        persistence.withFriendAndMetadataLock(id) { entry, _ ->
-            if (entry != null) {
-                PersistenceAction.Update(entry.copy(lastPollTs = ts)) to Unit
-            } else {
-                PersistenceAction.None to Unit
-            }
-        }
-    }
-
-    suspend fun updateIsCaughtUp(
-        id: String,
         isCaughtUp: Boolean,
     ) {
         persistence.withFriendAndMetadataLock(id) { entry, _ ->
-            if (entry != null && entry.isCaughtUp != isCaughtUp) {
-                PersistenceAction.Update(entry.copy(isCaughtUp = isCaughtUp)) to Unit
+            if (entry != null) {
+                PersistenceAction.Update(entry.copy(lastPollTs = ts, isCaughtUp = isCaughtUp)) to Unit
             } else {
                 PersistenceAction.None to Unit
             }

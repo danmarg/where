@@ -143,7 +143,7 @@ class PollFailureHandlingTest {
             // self-inflicted, expected "this one request timed out" signal (E2eeMailboxClient
             // wraps every mailbox call in withWallClockTimeout) - not a genuine structured-
             // concurrency shutdown. Unlike the real-cancellation cases above, it must NOT
-            // propagate out of pollFriend(): doing so would skip updateLastPollTs()/
+            // propagate out of pollFriend(): doing so would skip updatePollState()/
             // processOutbox()/the automated keepalive backstop check for every routine timeout,
             // which is the opposite of what's wanted since timeouts are the common case this
             // whole investigation started from.
@@ -166,5 +166,28 @@ class PollFailureHandlingTest {
                 "Per-friend housekeeping (updateLastPollTs/processOutbox/keepalive backstop) must " +
                     "still run after an ordinary wall-clock timeout, unlike a genuine cancellation",
             )
+        }
+
+    @Test
+    fun testBatchProcessedBeforeAFailedPollClearsCaughtUp() =
+        runTest {
+            val realMailbox = MemoryMailboxClient()
+            val (aliceManager, _, aliceFriend) = setupFriendship(realMailbox)
+
+            // Caught up after a long-ago poll; new traffic then arrives and its batch is
+            // processed (fresh lastPollTs), but the poll fails before the closing write.
+            aliceManager.updatePollState(aliceFriend.id, 1L, true)
+            val token = aliceFriend.session.recvToken.toHex()
+            val frames = realMailbox.mailboxes[token].orEmpty().filterIsInstance<EncryptedMessagePayload>()
+            requireNotNull(aliceManager.processBatch(aliceFriend.id, token, frames))
+
+            val after = aliceManager.getFriend(aliceFriend.id)!!
+            assertTrue(after.lastPollTs > 1L)
+            assertFalse(after.isCaughtUp, "Fresh lastPollTs must not sit beside a stale isCaughtUp=true")
+
+            aliceManager.updatePollState(aliceFriend.id, 5L, true)
+            val done = aliceManager.getFriend(aliceFriend.id)!!
+            assertEquals(5L, done.lastPollTs)
+            assertTrue(done.isCaughtUp)
         }
 }
