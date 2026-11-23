@@ -5,9 +5,12 @@ import dev.icerock.moko.resources.desc.Resource
 import dev.icerock.moko.resources.desc.ResourceFormatted
 import dev.icerock.moko.resources.desc.StringDesc
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.FriendEntry
@@ -137,12 +140,27 @@ class LocationRepository(
     private val _allPendingInvites = MutableStateFlow<List<PendingInviteView>>(emptyList())
     override val allPendingInvites: StateFlow<List<PendingInviteView>> = _allPendingInvites.asStateFlow()
 
-    private val awaitingFirstUpdateIds = mutableSetOf<String>()
+    // The rapid-poll trigger and the friends still awaited live in one cell, so "removed the last
+    // awaited id -> clear the trigger" and a concurrent mark/trigger are each a single atomic update.
+    private data class RapidState(
+        val trigger: Long = 0L,
+        val awaiting: Set<String> = emptySet(),
+    )
+
+    private val rapidState = MutableStateFlow(RapidState())
 
     private val pollWakeSignal = Channel<Unit>(Channel.CONFLATED)
 
-    private val _lastRapidPollTrigger = MutableStateFlow(0L)
-    override val lastRapidPollTrigger: StateFlow<Long> = _lastRapidPollTrigger.asStateFlow()
+    override val lastRapidPollTrigger: StateFlow<Long> =
+        object : StateFlow<Long> {
+            override val value: Long get() = rapidState.value.trigger
+            override val replayCache: List<Long> get() = listOf(value)
+
+            override suspend fun collect(collector: FlowCollector<Long>): Nothing {
+                rapidState.map { it.trigger }.distinctUntilChanged().collect(collector)
+                error("unreachable")
+            }
+        }
 
     override fun onLocation(
         lat: Double,
@@ -237,23 +255,26 @@ class LocationRepository(
     }
 
     override fun triggerRapidPoll() {
-        _lastRapidPollTrigger.value = net.af0.where.e2ee.currentTimeMillis()
+        val now = net.af0.where.e2ee.currentTimeMillis()
+        rapidState.update { it.copy(trigger = now) }
         pollWakeSignal.trySend(Unit)
     }
 
     override fun resetRapidPoll() {
-        _lastRapidPollTrigger.value = 0L
-        awaitingFirstUpdateIds.clear()
+        rapidState.value = RapidState()
     }
 
     override fun markAwaitingFirstUpdate(friendId: String) {
-        awaitingFirstUpdateIds.add(friendId)
+        rapidState.update { it.copy(awaiting = it.awaiting + friendId) }
     }
 
     override fun onFriendLocationReceived(friendId: String) {
-        if (awaitingFirstUpdateIds.remove(friendId)) {
-            if (awaitingFirstUpdateIds.isEmpty()) {
-                resetRapidPoll()
+        rapidState.update { cur ->
+            if (friendId !in cur.awaiting) {
+                cur
+            } else {
+                val rest = cur.awaiting - friendId
+                if (rest.isEmpty()) RapidState() else cur.copy(awaiting = rest)
             }
         }
     }
@@ -282,7 +303,7 @@ class LocationRepository(
         _pendingInitAliceEkPub.value = null
         _friends.value = emptyList()
         _allPendingInvites.value = emptyList()
-        _lastRapidPollTrigger.value = 0L
+        rapidState.value = RapidState()
         while (pollWakeSignal.tryReceive().isSuccess) { /* drain */ }
     }
 }

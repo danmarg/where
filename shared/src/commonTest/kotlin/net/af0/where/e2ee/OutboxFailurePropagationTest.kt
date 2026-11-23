@@ -70,7 +70,7 @@ class OutboxFailurePropagationTest {
             // location B - not silently drop A, and not skip sending B either.
             aliceClient.sendLocation(38.0, -123.0, emptySet())
 
-            val locations = bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            val locations = bobClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
             assertEquals(2, locations.size, "both the recovered stuck message and the new one must be delivered")
             assertEquals(37.0, locations[0].lat, "the originally stuck message must be delivered first, in order")
             assertEquals(38.0, locations[1].lat)
@@ -91,7 +91,7 @@ class OutboxFailurePropagationTest {
             // the failure to its caller.
             var threw = false
             try {
-                aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
+                aliceClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
             } catch (e: Exception) {
                 threw = true
             }

@@ -85,14 +85,14 @@ class PollFailureHandlingTest {
 
             // First poll fails outright - should NOT be recorded as caught up.
             faultyMailbox.pollExceptionOnce = NetworkException("Simulated network failure on POLL")
-            aliceClient.poll()
+            aliceClient.pollAll()
             assertFalse(
                 aliceManager.getFriend(aliceFriend.id)!!.isCaughtUp,
                 "A failed poll must not be recorded as caught up",
             )
 
             // A subsequent successful poll should drain the mailbox and mark caught-up normally.
-            val updates = aliceClient.poll()
+            val updates = aliceClient.pollAll()
             assertEquals(5, updates.size)
             assertTrue(
                 aliceManager.getFriend(aliceFriend.id)!!.isCaughtUp,
@@ -132,7 +132,7 @@ class PollFailureHandlingTest {
             faultyMailbox.pollExceptionAlways = CancellationException("simulated outer cancellation")
 
             assertFailsWith<CancellationException> {
-                aliceClient.poll()
+                aliceClient.pollAll()
             }
         }
 

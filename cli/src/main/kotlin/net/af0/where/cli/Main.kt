@@ -177,7 +177,7 @@ fun main(args: Array<String>) {
                 println("Bob discovery token: $discoveryHex")
                 println("Bob ID: ${bobEntry.id}")
                 try {
-                    KtorMailboxClient.post(host, discoveryHex, initPayload)
+                    locationClient.postKeyExchangeInit(bobEntry.id, qr, initPayload)
                     println("Posted KeyExchangeInit to mailbox")
                     println("Joined ${qr.suggestedName} as $name")
                 } catch (e: Exception) {

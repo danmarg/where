@@ -9,6 +9,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import net.af0.where.model.UserLocation
+import net.af0.where.model.newestPerUser
 
 /** Silence from a friend beyond this is treated as "not currently reading" - see sendLocation(). */
 const val UNRESPONSIVE_THRESHOLD_SECONDS = 5 * 60L
@@ -74,6 +75,8 @@ open class LocationClient(
     }
 
     private val friendMutexes = mutableMapOf<String, Mutex>()
+
+    // Guarded by mutexLock.
     private val silentDropRetries = mutableMapOf<String, Int>()
     private val mutexLock = Mutex()
 
@@ -233,6 +236,13 @@ open class LocationClient(
      */
     @Throws(Exception::class)
     suspend fun poll(
+        isForeground: Boolean = true,
+        pausedFriendIds: Set<String> = emptySet(),
+        sharingEnabled: Boolean = true,
+    ): List<UserLocation> = newestPerUser(pollAll(isForeground, pausedFriendIds, sharingEnabled))
+
+    // Every decrypted Location in delivery order; poll() reduces it to the newest per user.
+    internal suspend fun pollAll(
         isForeground: Boolean = true,
         pausedFriendIds: Set<String> = emptySet(),
         sharingEnabled: Boolean = true,
@@ -460,27 +470,34 @@ open class LocationClient(
                     var idsToAck = result.processedIds
                     if (idsToAck.isEmpty()) {
                         val retryKey = "$friendId:$currentToken"
-                        val currentRetries = (silentDropRetries[retryKey] ?: 0) + 1
-                        silentDropRetries[retryKey] = currentRetries
+                        // Guarded: pollFriend runs for several friends in parallel.
+                        val currentRetries =
+                            mutexLock.withLock {
+                                val n = (silentDropRetries[retryKey] ?: 0) + 1
+                                silentDropRetries[retryKey] = n
+                                n
+                            }
 
                         if (currentRetries >= MAX_SILENT_DROP_RETRIES) {
                             store.addDiagnosticEvent("force-ACK $friendId after $currentRetries silent drops on $currentToken")
                             idsToAck = messages.map { it.msgId }
-                            silentDropRetries.remove(retryKey)
+                            mutexLock.withLock { silentDropRetries.remove(retryKey) }
                         }
                         // If we couldn't process any messages and it's not a force-ACK, stop to avoid looping.
                         if (idsToAck.isEmpty()) {
                             stopPolling = true
                         }
                     } else {
-                        silentDropRetries.remove("$friendId:$currentToken")
+                        mutexLock.withLock { silentDropRetries.remove("$friendId:$currentToken") }
                     }
 
                     if (idsToAck.isNotEmpty()) {
                         try {
                             service.ackIds(currentToken, idsToAck)
+                        } catch (e: CancellationException) {
+                            throw e
                         } catch (e: Exception) {
-                            // Ignore
+                            // Ignore: an unacked message is redelivered and deduped.
                         }
                     }
 
@@ -512,7 +529,10 @@ open class LocationClient(
 
             try {
                 store.updatePollState(friendId, currentTimeSeconds(), caughtUp)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
+                store.addDiagnosticEvent("pollFriend($friendId) failed to update poll state: ${e.message}")
             }
 
             // Recovery: process any pending outbox messages for this friend. A message stuck
