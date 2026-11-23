@@ -356,10 +356,14 @@ class InMemoryMailboxState(
         limiter.evict(rateLimitWindowMs)
 
         val now = clock()
-        mailboxes.forEach { (token, _) ->
-            mailboxes.computeIfPresent(token) { _, q ->
-                q.removeIf { it.expiresAt <= now }
-                if (q.isEmpty()) null else q
+        // Under the token's lock: post() adds to the queue it got from the map while holding it,
+        // so removing an emptied queue unlocked could drop a message post() just answered true for.
+        mailboxes.keys.forEach { token ->
+            synchronized(getLock(token)) {
+                mailboxes.computeIfPresent(token) { _, q ->
+                    q.removeIf { it.expiresAt <= now }
+                    if (q.isEmpty()) null else q
+                }
             }
         }
 
@@ -665,7 +669,15 @@ class DynamoMailboxState(
             // HTTP layer's 429 response implicitly invites) still has a real message to enqueue,
             // rather than being silently swallowed by a dedup entry from the failed attempt.
             val depth = currentDepth(token, now)
-            if (depth >= MAX_QUEUE_DEPTH) return false
+            if (depth >= MAX_QUEUE_DEPTH) {
+                // A retry of a message still queued (its dedup record expired first) is a no-op,
+                // not a 429, like InMemoryMailboxState: restore the record and report success.
+                if (msgId != null && isQueued(token, msgId, now)) {
+                    putReceivedId(token, msgId, receivedIdExpiresAt)
+                    return true
+                }
+                return false
+            }
 
             val messageItem =
                 mapOf(
@@ -697,8 +709,8 @@ class DynamoMailboxState(
                     // already acked the row, the retry re-inserts it and the recipient's ratchet
                     // classifies the second copy as a replay and drops it.
                     //
-                    // A retry whose orphaned row is still queued counts toward the depth check above,
-                    // so on a full queue it gets a 429 rather than a no-op; it succeeds once space frees.
+                    // A retry whose orphaned row is still queued counts toward the depth check above;
+                    // on a full queue it is recognized as queued there and the record is restored.
                     val inserted =
                         try {
                             client.putItem(
@@ -722,18 +734,7 @@ class DynamoMailboxState(
                             depthCounts.remove(token)
                             false
                         }
-                    client.putItem(
-                        PutItemRequest.builder()
-                            .tableName(receivedIdsTable)
-                            .item(
-                                mapOf(
-                                    "token" to AttributeValue.fromS(token),
-                                    "msgId" to AttributeValue.fromS(msgId),
-                                    "expiresAt" to AttributeValue.fromN(receivedIdExpiresAt.toString()),
-                                ),
-                            )
-                            .build(),
-                    )
+                    putReceivedId(token, msgId, receivedIdExpiresAt)
                     if (!inserted) return true
                 } else {
                     client.putItem(PutItemRequest.builder().tableName(messagesTable).item(messageItem).build())
@@ -745,6 +746,42 @@ class DynamoMailboxState(
             depthCounts.computeIfPresent(token) { _, cached -> cached.copy(count = depth + 1) }
             return true
         }
+    }
+
+    private fun putReceivedId(
+        token: String,
+        msgId: String,
+        expiresAtSec: Long,
+    ) {
+        client.putItem(
+            PutItemRequest.builder()
+                .tableName(receivedIdsTable)
+                .item(
+                    mapOf(
+                        "token" to AttributeValue.fromS(token),
+                        "msgId" to AttributeValue.fromS(msgId),
+                        "expiresAt" to AttributeValue.fromN(expiresAtSec.toString()),
+                    ),
+                )
+                .build(),
+        )
+    }
+
+    /** Whether [token] holds a live message row for [msgId] (strongly consistent). */
+    private fun isQueued(
+        token: String,
+        msgId: String,
+        now: Long,
+    ): Boolean {
+        val response =
+            client.getItem(
+                GetItemRequest.builder()
+                    .tableName(messagesTable)
+                    .key(mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS(msgId)))
+                    .consistentRead(true)
+                    .build(),
+            )
+        return response.hasItem() && (response.item()["expiresAt"]?.n()?.toLongOrNull() ?: Long.MIN_VALUE) > now / 1000
     }
 
     /**
@@ -808,6 +845,9 @@ class DynamoMailboxState(
                             ),
                         )
                         .select(Select.COUNT)
+                        // Strongly consistent: an eventually consistent count can miss a row just
+                        // written, undercounting and letting the queue pass MAX_QUEUE_DEPTH.
+                        .consistentRead(true)
                         .exclusiveStartKey(lastKey)
                         .build(),
                 )
@@ -817,8 +857,10 @@ class DynamoMailboxState(
         return count
     }
 
+    // A row with no (or unparsable) expiresAt is not live, matching the `expiresAt > :now` filter
+    // that depth counts and drain() use: it was never counted, so deleting it frees no slot.
     private fun isLive(item: Map<String, AttributeValue>): Boolean =
-        (item["expiresAt"]?.n()?.toLongOrNull() ?: Long.MAX_VALUE) > clock() / 1000
+        (item["expiresAt"]?.n()?.toLongOrNull() ?: Long.MIN_VALUE) > clock() / 1000
 
     // Must be called while holding getLock(token) - see currentDepth()'s doc.
     private fun decrementDepth(
@@ -845,6 +887,7 @@ class DynamoMailboxState(
         val messages = mutableListOf<JsonElement>()
         var badCompact = 0
         var badPayload = 0
+        val corrupt = mutableMapOf<String, String>() // msgId -> the payload string observed
         var lastKey: Map<String, AttributeValue>? = null
         do {
             val response =
@@ -875,6 +918,10 @@ class DynamoMailboxState(
                         item["payload"]?.s()?.let { runCatching { json.parseToJsonElement(it) }.getOrNull() }
                     }
                 if (message == null) {
+                    // Only a legacy JSON payload that doesn't parse is corrupt whatever the version.
+                    // A compact item or one with no payload may be a newer layout this binary can't
+                    // read (e.g. after a rollback): skipped, never deleted.
+                    if (!compact) item["payload"]?.s()?.let { p -> item["msgId"]?.s()?.let { corrupt[it] = p } }
                     if (compact) badCompact++ else badPayload++
                 } else if (messages.size < MAX_MESSAGES_PER_POLL) {
                     messages.add(message)
@@ -882,6 +929,35 @@ class DynamoMailboxState(
             }
             lastKey = response.lastEvaluatedKey().takeIf { it.isNotEmpty() }
         } while (lastKey != null && messages.size < MAX_MESSAGES_PER_POLL)
+
+        // A corrupt payload would be re-skipped every poll and keep counting toward the depth cap
+        // until its TTL, so remove it. Best effort: a failed delete must not fail the poll.
+        if (corrupt.isNotEmpty()) {
+            try {
+                withDepthLock(token) {
+                    corrupt.forEach { (badId, badPayload) ->
+                        // Only the row drain() saw: if it was acked and replaced meanwhile, leave it.
+                        val deleted =
+                            try {
+                                client.deleteItem(
+                                    DeleteItemRequest.builder()
+                                        .tableName(messagesTable)
+                                        .key(mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS(badId)))
+                                        .conditionExpression("payload = :p")
+                                        .expressionAttributeValues(mapOf(":p" to AttributeValue.fromS(badPayload)))
+                                        .returnValues(ReturnValue.ALL_OLD)
+                                        .build(),
+                                )
+                            } catch (e: ConditionalCheckFailedException) {
+                                null
+                            }
+                        if (deleted != null && deleted.hasAttributes() && isLive(deleted.attributes())) decrementDepth(token, 1)
+                    }
+                }
+            } catch (e: Exception) {
+                auditLog.warn("Could not remove malformed mailbox items: {}", e.javaClass.simpleName)
+            }
+        }
 
         // One line per poll, counts only: never the token or a msgId (stable identifiers; see redactPath).
         if (badCompact + badPayload > 0) {

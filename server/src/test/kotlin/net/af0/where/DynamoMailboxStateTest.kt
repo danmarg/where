@@ -692,8 +692,8 @@ class DynamoMailboxStateTest {
         failNextWrite = true
         assertFailsWith<SdkClientException> { state.post(token, JsonPrimitive("x"), "x") }
         // The landed row has no idempotency record yet, so the retry reaches the depth check,
-        // where that row already counts.
-        assertFalse(state.post(token, JsonPrimitive("x"), "x"), "the landed row filled the last slot")
+        // where that row already counts; it is recognized as queued, so the retry is a no-op.
+        assertTrue(state.post(token, JsonPrimitive("x"), "x"), "the landed row is recognized, not rejected")
 
         assertFalse(state.post(token, JsonPrimitive("y"), "y"), "the committed write filled the last slot")
     }
@@ -981,6 +981,187 @@ class DynamoMailboxStateTest {
 
         now += 24 * 3600_000L
         assertTrue(state.post(token, JsonPrimitive("fresh"), "fresh-1"), "after a day the re-count drops them")
+    }
+
+    @Test
+    fun `a retry of a still-queued message on a full queue is a no-op once its dedup record is gone`() {
+        val state = store()
+        val token = freshToken()
+        seedFullQueue(token)
+        // seed-0 is queued; its dedup record never existed (like one the TTL sweep removed).
+        assertTrue(state.post(token, JsonPrimitive("retry"), "seed-0"), "matches InMemoryMailboxState: 204, not 429")
+        assertTrue(hasReceivedId(token, "seed-0"), "the retry restores the dedup record")
+        assertFalse(state.post(token, JsonPrimitive("new"), "brand-new"), "a genuinely new message is still rejected")
+    }
+
+    @Test
+    fun `deleting a row with no expiresAt does not free a depth-guard slot`() {
+        val state = store()
+        val token = freshToken()
+        seedFullQueue(token)
+        assertFalse(state.post(token, JsonPrimitive("over"), "over-1"), "full queue rejects (and caches the count)")
+        // Never counted (the count filters on expiresAt), so acking it must not decrement.
+        createDynamoDbClient("test", "test", "us-east-1", endpoint()).use { client ->
+            client.putItem(
+                PutItemRequest.builder()
+                    .tableName("test_messages_${tableCounter - 1}")
+                    .item(
+                        mapOf(
+                            "token" to AttributeValue.fromS(token),
+                            "msgId" to AttributeValue.fromS("no-expiry"),
+                            "payload" to AttributeValue.fromS("\"x\""),
+                            "postedAt" to AttributeValue.fromN(System.currentTimeMillis().toString()),
+                        ),
+                    )
+                    .build(),
+            )
+        }
+        state.deleteById(token, "no-expiry")
+        assertFalse(state.post(token, JsonPrimitive("over"), "over-2"), "still full")
+        state.deleteByIds(token, listOf("seed-0", "seed-1"))
+        assertTrue(state.post(token, JsonPrimitive("fits"), "fits-1"))
+    }
+
+    @Test
+    fun `the depth re-count reads strongly consistent`() {
+        val consistent = mutableListOf<Boolean?>()
+        val state =
+            store(wrap = { real ->
+                intercepting(real) { name, args ->
+                    val req = args.getOrNull(0) as? software.amazon.awssdk.services.dynamodb.model.QueryRequest
+                    if (name == "query" && req != null && req.indexName() == null) consistent.add(req.consistentRead())
+                    null
+                }
+            })
+        assertTrue(state.post(freshToken(), JsonPrimitive("x"), "m-1"))
+        assertEquals(listOf<Boolean?>(true), consistent)
+    }
+
+    @Test
+    fun `malformed items are deleted when drain skips them and stop counting toward the depth cap`() {
+        val state = store()
+        val token = freshToken()
+        val now = System.currentTimeMillis()
+        assertTrue(state.post(token, JsonPrimitive("good"), "good-1")) // seeds the depth cache
+        createDynamoDbClient("test", "test", "us-east-1", endpoint()).use { client ->
+            listOf("bad-0" to "{not json", "bad-1" to "{also not").forEachIndexed { i, (id, payload) ->
+                client.putItem(
+                    PutItemRequest.builder()
+                        .tableName("test_messages_${tableCounter - 1}")
+                        .item(
+                            mapOf(
+                                "token" to AttributeValue.fromS(token),
+                                "msgId" to AttributeValue.fromS(id),
+                                "payload" to AttributeValue.fromS(payload),
+                                "postedAt" to AttributeValue.fromN((now + i + 1).toString()),
+                                "expiresAt" to AttributeValue.fromN((now / 1000 + 3600).toString()),
+                            ),
+                        )
+                        .build(),
+                )
+            }
+        }
+        val logs = captureLogs { assertEquals(listOf(JsonPrimitive("good")), state.drain(token)) }
+        assertEquals(
+            listOf("Skipped 2 malformed mailbox items (compact=0, payload=2)"),
+            logs.filter { it.first == "Server" }.map { it.second },
+        )
+        logs.map { it.second }.forEach {
+            assertFalse(it.contains(token) || it.contains("bad-"), "log line leaked an identifier: $it")
+        }
+        assertTrue(rawItem(token, "bad-0").isEmpty(), "malformed item removed")
+        assertTrue(rawItem(token, "bad-1").isEmpty(), "malformed item removed")
+        assertEquals(1, rawItem(token, "good-1").size.coerceAtMost(1), "the valid message is untouched")
+        val second = captureLogs { assertEquals(listOf(JsonPrimitive("good")), state.drain(token)) }
+        assertTrue(second.none { it.first == "Server" }, "nothing left to warn about")
+    }
+
+    @Test
+    fun `deleting corrupt items on drain frees their depth-guard slots`() {
+        val state = store()
+        val token = freshToken()
+        seedFullQueue(token)
+        assertFalse(state.post(token, JsonPrimitive("over"), "over-1"), "full queue rejects (and caches the count)")
+        createDynamoDbClient("test", "test", "us-east-1", endpoint()).use { client ->
+            listOf("seed-0", "seed-1").forEach { id ->
+                client.putItem(
+                    PutItemRequest.builder()
+                        .tableName("test_messages_${tableCounter - 1}")
+                        .item(rawItem(token, id) + mapOf("payload" to AttributeValue.fromS("{corrupt")))
+                        .build(),
+                )
+            }
+        }
+        assertEquals(50, state.drain(token)!!.size)
+        assertTrue(rawItem(token, "seed-0").isEmpty())
+        assertTrue(state.post(token, JsonPrimitive("a"), "free-1"), "first freed slot")
+        assertTrue(state.post(token, JsonPrimitive("b"), "free-2"), "second freed slot")
+        assertFalse(state.post(token, JsonPrimitive("c"), "free-3"), "full again")
+    }
+
+    @Test
+    fun `an item in a compact layout this binary cannot decode is skipped but not deleted`() {
+        val state = store(compactPayloads = true)
+        val token = freshToken()
+        val now = System.currentTimeMillis()
+        createDynamoDbClient("test", "test", "us-east-1", endpoint()).use { client ->
+            client.putItem(
+                PutItemRequest.builder()
+                    .tableName("test_messages_${tableCounter - 1}")
+                    .item(
+                        mapOf(
+                            "token" to AttributeValue.fromS(token),
+                            "msgId" to AttributeValue.fromS("future-1"),
+                            "v" to AttributeValue.fromS("2-future"),
+                            "e" to AttributeValue.fromB(SdkBytes.fromByteArray(byteArrayOf(1))),
+                            "c" to AttributeValue.fromB(SdkBytes.fromByteArray(byteArrayOf(1))),
+                            "postedAt" to AttributeValue.fromN(now.toString()),
+                            "expiresAt" to AttributeValue.fromN((now / 1000 + 3600).toString()),
+                        ),
+                    )
+                    .build(),
+            )
+        }
+        repeat(2) { assertEquals(emptyList(), state.drain(token)) }
+        assertFalse(rawItem(token, "future-1").isEmpty(), "a layout this binary can't read is left for the newer one")
+    }
+
+    @Test
+    fun `cleanup of a corrupt item leaves a valid replacement posted since the drain read it`() {
+        var replace: (() -> Unit)? = null
+        val state =
+            store(wrap = { real ->
+                intercepting(real) { name, args ->
+                    if (name == "deleteItem" && (args[0] as? DeleteItemRequest)?.tableName()?.startsWith("test_messages_") == true) {
+                        replace?.also { replace = null }?.invoke()
+                    }
+                    null
+                }
+            })
+        val token = freshToken()
+        val now = System.currentTimeMillis()
+        val client = createDynamoDbClient("test", "test", "us-east-1", endpoint())
+
+        fun put(payload: String) =
+            client.putItem(
+                PutItemRequest.builder()
+                    .tableName("test_messages_${tableCounter - 1}")
+                    .item(
+                        mapOf(
+                            "token" to AttributeValue.fromS(token),
+                            "msgId" to AttributeValue.fromS("m-1"),
+                            "payload" to AttributeValue.fromS(payload),
+                            "postedAt" to AttributeValue.fromN(now.toString()),
+                            "expiresAt" to AttributeValue.fromN((now / 1000 + 3600).toString()),
+                        ),
+                    )
+                    .build(),
+            )
+        put("{corrupt")
+        replace = { put("\"valid\"") } // acked and re-sent between drain's read and its cleanup
+        assertEquals(emptyList(), state.drain(token))
+        client.close()
+        assertEquals(listOf(JsonPrimitive("valid")), state.drain(token), "the replacement survived the cleanup")
     }
 
     private fun rawItem(

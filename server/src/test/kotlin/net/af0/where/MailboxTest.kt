@@ -436,6 +436,24 @@ class MailboxTest {
     }
 
     @Test
+    fun `evict racing a post never loses the message the post accepted`() {
+        val state = InMemoryMailboxState()
+        val stop = java.util.concurrent.atomic.AtomicBoolean(false)
+        val evictor = Thread { while (!stop.get()) state.evictForTest(rateLimitWindowMs = 60_000) }
+        evictor.start()
+        try {
+            repeat(3000) { i ->
+                val token = "racetoken$i"
+                assertTrue(state.post(token, JsonPrimitive("m"), "m-$i"))
+                assertEquals(1, state.drain(token)!!.size, "message accepted for $token was lost to eviction")
+            }
+        } finally {
+            stop.set(true)
+            evictor.join()
+        }
+    }
+
+    @Test
     fun `evict does not remove mailbox entries with live messages`() {
         val state = InMemoryMailboxState()
         state.post("live", JsonPrimitive("msg"))
