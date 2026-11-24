@@ -505,6 +505,29 @@ class LocationServiceStationaryTest {
         }
 
     @Test
+    fun theStaleRegistrationWatchdogIgnoresWallClockJumps() =
+        runTest {
+            var wall = 1_000_000_000L
+            LocationService.clock = { wall }
+            val (controller, service) = buildService()
+            val registrations = requestCalls
+            assertTrue(registrations > 0 && service.isRegistered, "registered at startup")
+
+            // The user (or NTP) moves the wall clock forward past the threshold; no real time passed.
+            wall += 2 * LocationService.STALE_REGISTRATION_THRESHOLD_MS
+            fakeLocationSource.wakePoll()
+            advanceUntilIdle()
+            assertEquals(registrations, requestCalls, "a wall-clock jump is not a stale registration")
+
+            // Elapsed time past the threshold with no callback still re-registers.
+            setElapsed(elapsed() + 2 * LocationService.STALE_REGISTRATION_THRESHOLD_MS)
+            fakeLocationSource.wakePoll()
+            advanceUntilIdle()
+            assertTrue(requestCalls > registrations, "elapsed staleness re-registers")
+            controller.destroy()
+        }
+
+    @Test
     fun aSilentlyDroppedPassiveListenerIsReRegisteredWhileStationary() =
         runTest {
             val (controller, service) = buildService()

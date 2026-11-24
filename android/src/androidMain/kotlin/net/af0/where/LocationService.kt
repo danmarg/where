@@ -206,10 +206,10 @@ class LocationService : Service() {
     internal var consecutiveLateHeartbeats = 0
 
     @VisibleForTesting
-    internal var lastLocationCallbackTime: Long = 0L
+    internal var lastLocationCallbackTime: Long? = null
 
     @VisibleForTesting
-    internal var lastRegistrationTime: Long = 0L
+    internal var lastRegistrationTime: Long? = null
 
     // [elapsedClock] time of the passive listener's last sign of life: a location callback or a
     // successful passive registration. See refreshQuietPassiveListener.
@@ -355,7 +355,7 @@ class LocationService : Service() {
 
         locationProvider = locationProviderOverride ?: createLocationProvider()
         locationProvider.init(this) { lat, lng, bearing ->
-            lastLocationCallbackTime = clock()
+            lastLocationCallbackTime = elapsedClock()
             lastPassiveSignAt = elapsedClock()
             locationSource.onLocation(lat, lng, bearing)
         }
@@ -795,8 +795,8 @@ class LocationService : Service() {
         // re-registrations (watchdog, leaving HIGH or stationary).
         if (isRegistered) stationary.startTracking(elapsedClock())
         if (isRegistered) {
-            lastRegistrationTime = clock()
-            lastLocationCallbackTime = 0L // reset so watchdog waits for the first callback from this registration
+            lastRegistrationTime = elapsedClock()
+            lastLocationCallbackTime = null // reset so watchdog waits for the first callback from this registration
             Log.i(TAG, "Location updates registered successfully with priority=$priority.")
         } else {
             Log.w(TAG, "requestActiveUpdates failed (likely missing permission); isRegistered=false")
@@ -1041,16 +1041,16 @@ class LocationService : Service() {
             // Watchdog: Samsung (and some other OEMs) can silently revoke FLP registrations
             // without any error callback. If we haven't seen a callback for
             // STALE_REGISTRATION_THRESHOLD_MS, force a re-registration.
-            val now = clock()
+            val now = elapsedClock()
             // Not while stationary: nothing active is registered, and passive callbacks may
             // legitimately not come for hours.
             if (isRegistered && stationary.mode != StationaryPolicy.Mode.STATIONARY) {
-                val referenceTime = if (lastLocationCallbackTime > 0L) lastLocationCallbackTime else lastRegistrationTime
-                if (referenceTime > 0L && now - referenceTime > STALE_REGISTRATION_THRESHOLD_MS) {
+                val referenceTime = lastLocationCallbackTime ?: lastRegistrationTime
+                if (referenceTime != null && now - referenceTime > STALE_REGISTRATION_THRESHOLD_MS) {
                     Log.w(TAG, "FLP callbacks stale for ${(now - referenceTime) / 60000}min; re-registering")
                     e2eeManager.addDiagnosticEvent("FLP stale; re-registering")
                     invalidateRegistration()
-                    lastLocationCallbackTime = 0L
+                    lastLocationCallbackTime = null
                     ensureLocationRegistration()
                 }
             }

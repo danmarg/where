@@ -505,6 +505,9 @@ class LocationServiceTest {
                 every { mockLocation.latitude } returns 45.0
                 every { mockLocation.longitude } returns 90.0
                 every { mockLocation.hasBearing() } returns false
+                // forceFix logs the fix's accuracy; a strict mock without it makes the call throw
+                // and forceLocationUpdateAndGet return null.
+                every { mockLocation.accuracy } returns 5f
 
                 io.mockk.coEvery { mockProvider.getCurrentLocation() } returns mockLocation
 

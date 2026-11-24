@@ -272,13 +272,19 @@ class FriendPollerTest {
         }
 
     @Test
-    fun poll_cleanupFailure_isReportedNotThrown() =
+    fun poll_cleanupFailure_doesNotAbortThePoll() =
         runTest {
             coEvery { manager.cleanupExpiredInvites() } throws RuntimeException("db")
 
             poller.poll()
 
-            assertTrue(source.connectionStatus.value is ConnectionStatus.Error)
+            coVerify(exactly = 1) { client.poll(any(), any(), any()) }
+            assertEquals(ConnectionStatus.Ok, source.connectionStatus.value)
+
+            // Retried with the hourly cadence, not on every poll.
+            poller.poll()
+            coVerify(exactly = 1) { manager.cleanupExpiredInvites() }
+            coVerify(exactly = 2) { client.poll(any(), any(), any()) }
         }
 
     @Test

@@ -77,8 +77,16 @@ internal class FriendPoller(
             Log.d(TAG, "Polling for location updates (source=${source.value})")
             val now = clock()
             if (now - gate.lastCleanupTime > 3600_000L) {
-                e2eeManager.cleanupExpiredInvites()
+                // Housekeeping must never starve the poll, ack and keepalive below; a failure is
+                // retried in an hour like a success.
                 gate.lastCleanupTime = now
+                try {
+                    e2eeManager.cleanupExpiredInvites()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "Expired-invite cleanup failed: ${e.message}")
+                }
             }
             val updates =
                 locationClient.poll(
