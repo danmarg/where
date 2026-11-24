@@ -87,6 +87,19 @@ internal object ServicePolicy {
         ) : Decision
     }
 
+    /**
+     * The give-up flag to carry into the next decision: it stays while syncs still run and the
+     * decision is still the skipped stop (or the wait that follows it). Cleared once they have
+     * ended (a later sync gets a fresh wait) or an input changed enough to make [decision] a
+     * run for another reason (app visible, sharing, rapid) or a stop for no friends.
+     */
+    fun nextGaveUp(
+        state: State,
+        decision: Decision,
+    ): Boolean =
+        state.syncWaitGaveUp && state.runningSyncs > 0 &&
+            (decision as? Decision.Run)?.reason == RunReason.SYNC_WAIT_GAVE_UP
+
     fun decide(
         state: State,
         nowMs: Long,

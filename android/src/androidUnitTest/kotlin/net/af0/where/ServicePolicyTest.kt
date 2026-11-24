@@ -177,4 +177,17 @@ class ServicePolicyTest {
             )
         for (r in rows) assertEquals(r.expected, ServicePolicy.decide(r.state, r.nowMs), r.name)
     }
+
+    @Test
+    fun `give-up persists only while syncs run and the decision is still the skipped stop`() {
+        fun next(state: State) = ServicePolicy.nextGaveUp(state, ServicePolicy.decide(state, now))
+        val idle = st(graceAt = now - grace, syncs = 1, gaveUp = true)
+        assertEquals(true, next(idle), "kept across iterations while the sync hangs")
+        assertEquals(false, next(idle.copy(runningSyncs = 0)), "syncs ended: spent")
+        assertEquals(false, next(idle.copy(appForeground = true)), "app visible: input changed")
+        assertEquals(false, next(idle.copy(sharing = true)), "sharing on: input changed")
+        assertEquals(false, next(idle.copy(rapid = true)), "rapid: input changed")
+        assertEquals(false, next(idle.copy(hasRelationships = false)), "nobody left")
+        assertEquals(false, next(idle.copy(syncWaitGaveUp = false)), "never gave up")
+    }
 }

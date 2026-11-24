@@ -899,6 +899,49 @@ class LocationServiceTest {
             io.mockk.coVerify(exactly = 1) { mockClient.poll(any(), any(), any()) }
         }
 
+    /**
+     * C22b: the give-up lasts while the sync hangs. The loop returns to its normal cadence rather
+     * than re-waiting 60 s each iteration, and the idle stop happens once the sync ends.
+     */
+    @Test
+    fun idleStop_stuckSync_giveUpPersists_thenStopsWhenTheSyncEnds() =
+        runTest {
+            val (controller, mockClient, sync) = serviceWaitingOnSync()
+            advanceTimeBy(LocationService.NETWORK_SYNC_WAIT_MS + 1)
+            runCurrent()
+            io.mockk.coVerify(exactly = 1) { mockClient.poll(any(), any(), any()) }
+
+            // Well under the 5 min cadence, several 60 s waits' worth: no further iteration.
+            advanceTimeBy(4 * 60_000L)
+            runCurrent()
+            io.mockk.coVerify(exactly = 1) { mockClient.poll(any(), any(), any()) }
+            assertFalse(shadowOf(controller.get()).isStoppedBySelf)
+
+            sync.complete()
+            runCurrent()
+            assertTrue(shadowOf(controller.get()).isStoppedBySelf, "the stop skipped for the hung sync is due")
+        }
+
+    /** C22c: a change made between onCreate and the collector's first run is not swallowed. */
+    @Test
+    fun sharingTurnedOffRightAfterCreate_stillStopsAfterTheGrace() =
+        runTest {
+            var now = 1_000_000L
+            LocationService.elapsedClock = { now }
+            (context as TestWhereApplication).userStore.setSharing(true)
+            fakeLocationSource.setAppForeground(false)
+            val (controller, _) = buildServiceWithFriend()
+            controller.create()
+            // Before any collector has run.
+            (context as TestWhereApplication).userStore.setSharing(false)
+            advanceUntilIdle()
+
+            now += LocationService.BACKGROUND_STOP_GRACE_MS + 1
+            fakeLocationSource.wakePoll()
+            advanceUntilIdle()
+            assertTrue(shadowOf(controller.get()).isStoppedBySelf)
+        }
+
     /** The app coming back while the idle stop waits for a (stuck) sync ends the wait at once. */
     @Test
     fun idleStop_appOpenedDuringTheSync_keepsRunning() =
