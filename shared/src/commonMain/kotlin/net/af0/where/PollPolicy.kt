@@ -82,4 +82,32 @@ object PollPolicy {
             appForeground -> FOREGROUND_INTERVAL_MS
             else -> BACKGROUND_INTERVAL_MS
         }
+
+    /**
+     * Whether a location fix should wake a poll (so "whenever we share, we also receive"): only
+     * when the last poll, from any wake, is at least this mode's [intervalMs] old. A fix after a
+     * gap (or the first one, [lastPollAtMs] null) wakes at once; fixes arriving up to once a
+     * second (the passive listener) don't each cost a poll. A last poll in the future (a clock
+     * that went back) doesn't hold wakes off. Forced and visibility wakes don't go through here.
+     */
+    fun shouldWakeOnFix(
+        nowMs: Long,
+        lastPollAtMs: Long?,
+        rapid: Boolean,
+        appForeground: Boolean,
+    ): Boolean {
+        val age = nowMs - (lastPollAtMs ?: return true)
+        return age < 0 || age >= intervalMs(rapid, appForeground)
+    }
+
+    /**
+     * Whether a poll cycle also polls the pending-invite discovery mailboxes (one GET each): only
+     * while the app is visible or [isRapid] (invite sheet, naming screen, a fresh incoming invite,
+     * a recent trigger), the same rule as iOS's `updateUi || isInviteSheetShowing`. Background
+     * maintenance polls skip it; opening the app polls them.
+     */
+    fun shouldPollInvites(
+        appForeground: Boolean,
+        rapid: Boolean,
+    ): Boolean = appForeground || rapid
 }

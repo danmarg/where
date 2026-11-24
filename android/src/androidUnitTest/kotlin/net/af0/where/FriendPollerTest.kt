@@ -145,6 +145,7 @@ class FriendPollerTest {
             val r = result(ek, multiple = true)
             coEvery { client.pollPendingInvites() } returns listOf(r)
             coEvery { manager.listPendingInvites() } returns listOf(inviteWith(ek))
+            source.setAppForeground(true)
             ui.setInviteSheetShowing(true)
 
             poller.poll()
@@ -156,8 +157,41 @@ class FriendPollerTest {
         }
 
     @Test
+    fun poll_backgroundWithNothingWaiting_skipsInviteMailboxes() =
+        runTest {
+            source.setAppForeground(false)
+
+            poller.poll()
+
+            coVerify(exactly = 0) { client.pollPendingInvites() }
+        }
+
+    @Test
+    fun poll_foreground_pollsInviteMailboxes() =
+        runTest {
+            source.setAppForeground(true)
+
+            poller.poll()
+
+            coVerify(exactly = 1) { client.pollPendingInvites() }
+        }
+
+    @Test
+    fun poll_backgroundWithInviteSheetOpen_pollsInviteMailboxes() =
+        runTest {
+            source.setAppForeground(true)
+            ui.setInviteSheetShowing(true)
+            source.setAppForeground(false) // sharing the link leaves the app; the sheet stays open
+
+            poller.poll()
+
+            coVerify(exactly = 1) { client.pollPendingInvites() }
+        }
+
+    @Test
     fun poll_handshakeForClearedInvite_isIgnored() =
         runTest {
+            source.setAppForeground(true)
             coEvery { client.pollPendingInvites() } returns listOf(result(key(1)))
             coEvery { manager.listPendingInvites() } returns listOf(inviteWith(key(7)))
 
@@ -172,6 +206,7 @@ class FriendPollerTest {
             val ek = key(1)
             coEvery { client.pollPendingInvites() } returns listOf(result(ek, error = "bad handshake"))
             coEvery { manager.listPendingInvites() } returns listOf(inviteWith(ek))
+            source.setAppForeground(true)
             ui.setInviteSheetShowing(true)
 
             poller.poll()
@@ -201,6 +236,7 @@ class FriendPollerTest {
     @Test
     fun poll_pollPendingInvitesThrows_doesNotCrashOrLoseFriendUpdates() =
         runTest {
+            source.setAppForeground(true)
             val update = UserLocation("f1", 1.0, 2.0, 123L)
             coEvery { client.poll(any(), any(), any()) } returns listOf(update)
             coEvery { client.pollPendingInvites() } throws RuntimeException("boom")

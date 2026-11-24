@@ -465,7 +465,12 @@ class LocationService : Service() {
             var first = true
             locationSource.isAppInForeground.collect {
                 // The first emission is the current value: nothing happened if it is the snapshot.
-                if (!first || it != initialForeground) events.trySend(ServiceEvent.Visibility(it, elapsedClock()))
+                if (!first || it != initialForeground) {
+                    events.trySend(ServiceEvent.Visibility(it, elapsedClock()))
+                    // Coming back: poll now, not at the end of a 5 min background sleep. Pending
+                    // invites aren't polled in the background (PollPolicy.shouldPollInvites).
+                    if (it) locationSource.wakePoll()
+                }
                 first = false
             }
         }
@@ -511,11 +516,16 @@ class LocationService : Service() {
 
                     // When our own location changes, trigger a poll for friend updates.
                     // This ensures that whenever we share, we also receive. At most once per
-                    // MIN_SEND_INTERVAL_MS: fixes arrive up to 1/s (the passive listener), and a
-                    // poll on each would be as wasteful as a send on each.
-                    val now = clock()
-                    if (now - lastLocationPollWakeTime >= MIN_SEND_INTERVAL_MS) {
-                        lastLocationPollWakeTime = now
+                    // the poll interval for the current state (PollPolicy.shouldWakeOnFix): fixes arrive up
+                    // to 1/s (the passive listener), and a poll on each would be as wasteful as a
+                    // send on each.
+                    if (PollPolicy.shouldWakeOnFix(
+                            elapsedClock(),
+                            lastPollAtElapsedMs,
+                            friendPoller.isRapidPolling(),
+                            locationSource.isAppInForeground.value,
+                        )
+                    ) {
                         locationSource.wakePoll()
                     }
                 }
@@ -823,6 +833,7 @@ class LocationService : Service() {
         isRegistered = false
         pendingFriendSends.close()
         cancelDozeAlarm()
+        lastPollAtMs = 0L
         serviceScope.cancel()
         // pollLoop() is the only other place this is released; if the Service is torn down
         // while a wake is in flight (or after pollLoop has already died — see the
@@ -836,7 +847,9 @@ class LocationService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private var lastLocationPollWakeTime = 0L
+    // [elapsedClock] time the loop last polled, from any wake; null before the first.
+    @Volatile
+    private var lastPollAtElapsedMs: Long? = null
 
     // What woke pollLoop for the heartbeat being drained, for the reliability log.
     private var heartbeatWakeTrigger: WakeSource? = null
@@ -1062,6 +1075,8 @@ class LocationService : Service() {
             // Poll even with sharing off: incoming EpochRotations and Ratchet Acks keep peers'
             // sessions moving (in the background with sharing off, the worker does this).
             doPoll(source)
+            lastPollAtElapsedMs = elapsedClock()
+            lastPollAtMs = clock()
             // Heartbeat: ensure we send at least once every 5 minutes when stationary.
             // Runs regardless of foreground state so background location stays alive. Only when
             // due: this loop also wakes on location callbacks and the 10 s / 2 s timers, and
@@ -1516,9 +1531,6 @@ class LocationService : Service() {
          */
         const val STATIONARY_FORCE_UPDATE_THRESHOLD_MS = 5 * 60 * 1000L
 
-        /** Minimum interval between non-heartbeat (movement-triggered) location sends. */
-        const val MIN_SEND_INTERVAL_MS = 30_000L
-
         /** Interval between heartbeat sends when stationary. */
         const val HEARTBEAT_INTERVAL_MS = 300_000L
 
@@ -1550,6 +1562,14 @@ class LocationService : Service() {
 
         /** How often a failed passive registration is retried. */
         const val PASSIVE_RETRY_INTERVAL_MS = 60_000L
+
+        /**
+         * [clock] time of the service's last poll, 0 when it isn't running: the WorkManager
+         * heartbeat skips its tick while the service has polled within its cadence (E8).
+         */
+        @Volatile
+        var lastPollAtMs: Long = 0L
+            internal set
 
         /** Overridable in tests. */
         var clock: () -> Long = { System.currentTimeMillis() }

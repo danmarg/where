@@ -145,6 +145,9 @@ internal class FriendPoller(
 
     /** Surfaces incoming handshakes. Returns true if it reported an error to the UI. */
     private suspend fun pollPendingInvites(): Boolean {
+        // Gated like iOS: a GET per pending invite every cycle is only worth it while someone
+        // can be waiting on the answer.
+        if (!PollPolicy.shouldPollInvites(locationSource.isAppInForeground.value, isRapidPolling())) return false
         try {
             val results = locationClient.pollPendingInvites()
             if (results.isEmpty()) return false

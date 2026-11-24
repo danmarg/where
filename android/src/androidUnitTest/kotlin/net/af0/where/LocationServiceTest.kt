@@ -668,6 +668,23 @@ class LocationServiceTest {
             assertTrue(shadowOf(controller.get()).isStoppedBySelf)
         }
 
+    @Test
+    fun returningToForeground_pollsAtOnceInsteadOfAfterTheBackgroundSleep() =
+        runTest {
+            (context as TestWhereApplication).userStore.setSharing(true)
+            fakeLocationSource.setAppForeground(false)
+            val (controller, mockClient) = buildServiceWithFriend()
+
+            controller.create()
+            advanceUntilIdle()
+            io.mockk.clearMocks(mockClient, answers = false, recordedCalls = true)
+
+            fakeLocationSource.setAppForeground(true)
+            advanceUntilIdle()
+
+            io.mockk.coVerify(atLeast = 1) { mockClient.poll(any(), any(), any()) }
+        }
+
     /** Delay until the next scheduled AlarmManager alarm, in ms. */
     private fun nextAlarmIn(): Long {
         val alarms = shadowOf(context.getSystemService(android.app.AlarmManager::class.java))

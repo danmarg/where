@@ -131,4 +131,18 @@ internal object ServicePolicy {
         val graceAlarmIn = if (idle) graceLeft.takeIf { it > 0 } else null
         return Decision.Run(reason, interval, alarmIn, graceAlarmIn)
     }
+
+    /**
+     * Whether the WorkManager heartbeat should nudge the (sharing) service: not when the service
+     * itself polled less than [PollPolicy.BACKGROUND_INTERVAL_MS] ago ([lastServicePollMs]; null
+     * when it isn't running), since a tick would force a second poll inside its own cadence. A
+     * poll time in the future (clock set back) doesn't hold the nudge off.
+     */
+    fun shouldNudgeFromWorker(
+        nowMs: Long,
+        lastServicePollMs: Long?,
+    ): Boolean {
+        val age = nowMs - (lastServicePollMs ?: return true)
+        return age < 0 || age >= PollPolicy.BACKGROUND_INTERVAL_MS
+    }
 }

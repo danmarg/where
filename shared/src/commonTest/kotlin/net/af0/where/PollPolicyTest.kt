@@ -71,4 +71,30 @@ class PollPolicyTest {
         assertEquals(10_000L, PollPolicy.intervalMs(rapid = false, appForeground = true))
         assertEquals(300_000L, PollPolicy.intervalMs(rapid = false, appForeground = false))
     }
+
+    @Test
+    fun `fix wakes a poll only after the mode's interval since the last poll`() {
+        data class Row(val name: String, val last: Long?, val rapid: Boolean, val fg: Boolean, val wake: Boolean)
+        val rows =
+            listOf(
+                Row("first fix", null, false, false, true),
+                Row("background, 30 s after a poll", now - 30_000, false, false, false),
+                Row("background, just under 5 min", now - 299_999, false, false, false),
+                Row("background, 5 min", now - 300_000, false, false, true),
+                Row("foreground, 9 s", now - 9_000, false, true, false),
+                Row("foreground, 10 s", now - 10_000, false, true, true),
+                Row("rapid, 1 s", now - 1_000, true, false, false),
+                Row("rapid, 2 s", now - 2_000, true, true, true),
+                Row("clock went back", now + 5_000, false, false, true),
+            )
+        for (r in rows) assertEquals(r.wake, PollPolicy.shouldWakeOnFix(now, r.last, r.rapid, r.fg), r.name)
+    }
+
+    @Test
+    fun `invites are polled only while visible or rapid`() {
+        assertEquals(true, PollPolicy.shouldPollInvites(appForeground = true, rapid = false))
+        assertEquals(true, PollPolicy.shouldPollInvites(appForeground = false, rapid = true))
+        assertEquals(true, PollPolicy.shouldPollInvites(appForeground = true, rapid = true))
+        assertEquals(false, PollPolicy.shouldPollInvites(appForeground = false, rapid = false))
+    }
 }

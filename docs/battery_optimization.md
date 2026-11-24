@@ -77,7 +77,7 @@ We enforce a **200-meter movement threshold** on both iOS and Android before con
 * **Battery Conservation:** By ignoring movements less than 200m, we avoid waking up the E2EE encryption engine and the cellular radio for negligible position changes.
 
 ### 3.2 Software Send Throttle (30 seconds)
-Even if the operating system delivers location updates at high frequencies (e.g., during driving), the app limits outbound network transmissions to **once every 30 seconds** (`MIN_SEND_INTERVAL_MS`).
+Even if the operating system delivers location updates at high frequencies (e.g., during driving), the app limits outbound network transmissions to **once every 30 seconds** (`LocationSendScheduler`).
 * Updates received within the 30-second window overwrite the local cached location and are queued.
 * At the end of the throttle period, the latest coordinates are encrypted and sent. This ensures friends see the most recent position without flooding the network.
 

@@ -190,4 +190,14 @@ class ServicePolicyTest {
         assertEquals(false, next(idle.copy(hasRelationships = false)), "nobody left")
         assertEquals(false, next(idle.copy(syncWaitGaveUp = false)), "never gave up")
     }
+
+    @Test
+    fun `worker nudges the service unless it polled within the background cadence`() {
+        val cadence = PollPolicy.BACKGROUND_INTERVAL_MS
+        assertEquals(true, ServicePolicy.shouldNudgeFromWorker(now, null))
+        assertEquals(false, ServicePolicy.shouldNudgeFromWorker(now, now - 1_000))
+        assertEquals(false, ServicePolicy.shouldNudgeFromWorker(now, now - cadence + 1))
+        assertEquals(true, ServicePolicy.shouldNudgeFromWorker(now, now - cadence))
+        assertEquals(true, ServicePolicy.shouldNudgeFromWorker(now, now + 1_000))
+    }
 }
