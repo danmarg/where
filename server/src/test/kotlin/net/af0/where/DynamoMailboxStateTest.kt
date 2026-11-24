@@ -1022,6 +1022,177 @@ class DynamoMailboxStateTest {
         assertTrue(state.post(token, JsonPrimitive("fits"), "fits-1"))
     }
 
+    /** Counts DynamoDB calls by name, with queries split into "query" (base table) and "queryIndex". */
+    private fun countingStore(
+        calls: MutableMap<String, Int>,
+        clock: () -> Long = System::currentTimeMillis,
+        extra: (String, Array<Any?>) -> Any? = { _, _ -> null },
+    ) = store(clock = clock, wrap = { real ->
+        intercepting(real) { name, args ->
+            val req = args.getOrNull(0) as? software.amazon.awssdk.services.dynamodb.model.QueryRequest
+            val key = if (name == "query" && req?.indexName() != null) "queryIndex" else name
+            calls.merge(key, 1, Int::plus)
+            extra(name, args)
+        }
+    })
+
+    @Test
+    fun `a post after its queue was emptied by acks needs no depth COUNT query`() {
+        val calls = mutableMapOf<String, Int>()
+        val state = countingStore(calls)
+        val token = freshToken()
+        assertTrue(state.post(token, JsonPrimitive(1), "m-1"))
+        assertEquals(1, calls["query"], "first post seeds the cache")
+        state.deleteById(token, "m-1")
+        assertTrue(state.post(token, JsonPrimitive(2), "m-2"))
+        state.deleteByIds(token, listOf("m-2"))
+        assertTrue(state.post(token, JsonPrimitive(3), "m-3"))
+        assertEquals(1, calls["query"], "a cache entry at 0 is kept, so no re-count")
+        assertEquals(listOf<kotlinx.serialization.json.JsonElement>(JsonPrimitive(3)), state.drain(token))
+    }
+
+    @Test
+    fun `a full queue acked down to exactly zero is refilled from the cached zero`() {
+        val calls = mutableMapOf<String, Int>()
+        val state = countingStore(calls)
+        val token = freshToken()
+        seedFullQueue(token)
+        assertFalse(state.post(token, JsonPrimitive("x"), "over")) // seeds the cache at the cap
+        assertEquals(1, calls["query"])
+        state.deleteByIds(token, (0 until TEST_MAX_QUEUE_DEPTH).map { "seed-$it" }) // down to exactly 0
+        // The cache stayed at 0 (no re-count) and counts from there: a rejected-then-freed queue
+        // takes new posts and the next ack of them frees slots one-for-one.
+        repeat(3) { assertTrue(state.post(token, JsonPrimitive(it), "n-$it")) }
+        assertEquals(1, calls["query"], "no re-count after reaching zero")
+        assertEquals(3, state.drain(token)?.size)
+        state.deleteByIds(token, listOf("n-0", "n-1", "n-2"))
+        assertEquals(emptyList(), state.drain(token))
+        assertEquals(1, calls["query"])
+    }
+
+    @Test
+    fun `deleteByIds skips the existence check when no live count is cached`() {
+        val calls = mutableMapOf<String, Int>()
+        val state = countingStore(calls)
+        val token = freshToken()
+        // No cache entry (e.g. after a restart): nothing to decrement, so no BatchGetItem.
+        assertEquals(1, state.deleteByIds(token, listOf("ghost")))
+        assertEquals(null, calls["batchGetItem"])
+
+        // With live messages cached the check still runs, and frees exactly the existing slots.
+        assertTrue(state.post(token, JsonPrimitive(1), "m-1"))
+        assertTrue(state.post(token, JsonPrimitive(2), "m-2"))
+        assertEquals(2, state.deleteByIds(token, listOf("m-1", "m-2")))
+        assertEquals(1, calls["batchGetItem"])
+        // A retried ack of the now-empty (cached 0) queue skips it again.
+        assertEquals(2, state.deleteByIds(token, listOf("m-1", "m-2")))
+        assertEquals(1, calls["batchGetItem"])
+        assertEquals(emptyList(), state.drain(token))
+    }
+
+    @Test
+    fun `retried acks and a refill after an uncached ack keep the depth guard exact`() {
+        val state = store()
+        val token = freshToken()
+        seedFullQueue(token)
+        // Ack with no cache entry (never seeded in this process), then seed and fill to the cap.
+        assertEquals(2, state.deleteByIds(token, listOf("seed-0", "seed-1")))
+        assertTrue(state.post(token, JsonPrimitive("a"), "a-1"))
+        assertTrue(state.post(token, JsonPrimitive("b"), "a-2"))
+        assertFalse(state.post(token, JsonPrimitive("c"), "a-3"))
+    }
+
+    @Test
+    fun `an empty poll is answered without querying until a post, and is re-queried after a minute`() {
+        var now = System.currentTimeMillis()
+        val calls = mutableMapOf<String, Int>()
+        val state = countingStore(calls, clock = { now })
+        val token = freshToken()
+        assertEquals(emptyList(), state.drain(token))
+        assertEquals(emptyList(), state.drain(token))
+        assertEquals(1, calls["queryIndex"], "second empty poll is served from the cache")
+
+        now += 61_000
+        assertEquals(emptyList(), state.drain(token))
+        assertEquals(2, calls["queryIndex"], "re-queried once the entry is a minute old")
+
+        assertTrue(state.post(token, JsonPrimitive("hi"), "m-1"))
+        assertEquals(listOf<kotlinx.serialization.json.JsonElement>(JsonPrimitive("hi")), state.drain(token), "post invalidates")
+        assertEquals(3, calls["queryIndex"])
+        state.deleteById(token, "m-1")
+        now += 10_000
+        assertEquals(emptyList(), state.drain(token))
+        assertEquals(emptyList(), state.drain(token))
+        assertEquals(4, calls["queryIndex"], "emptied again: one query, then cached")
+        // Other tokens are unaffected.
+        assertEquals(emptyList(), state.drain(freshToken()))
+        assertEquals(5, calls["queryIndex"])
+    }
+
+    @Test
+    fun `an empty result is not cached right after a post, nor when a post raced the query`() {
+        var now = System.currentTimeMillis()
+        val calls = mutableMapOf<String, Int>()
+        lateinit var state: DynamoMailboxState
+        val token = freshToken()
+        var racePost = false
+        state =
+            countingStore(calls, clock = { now }) { name, args ->
+                val req = args.getOrNull(0) as? software.amazon.awssdk.services.dynamodb.model.QueryRequest
+                if (name == "query" && req?.indexName() != null && racePost) {
+                    racePost = false
+                    // A post lands while the drain's query is in flight; the query itself saw nothing.
+                    assertTrue(state.post(token, JsonPrimitive("raced"), "raced-1"))
+                    return@countingStore software.amazon.awssdk.services.dynamodb.model.QueryResponse.builder().build()
+                }
+                null
+            }
+        racePost = true
+        assertEquals(emptyList(), state.drain(token))
+        now += 10_000
+        assertEquals(listOf<kotlinx.serialization.json.JsonElement>(JsonPrimitive("raced")), state.drain(token))
+
+        // Within the quiet period after a post, an empty answer (lagging index) is not remembered.
+        state.deleteById(token, "raced-1")
+        assertTrue(state.post(token, JsonPrimitive("q"), "q-1"))
+        state.deleteById(token, "q-1")
+        val before = calls["queryIndex"]!!
+        now += 1_000
+        assertEquals(emptyList(), state.drain(token))
+        assertEquals(emptyList(), state.drain(token))
+        assertEquals(before + 2, calls["queryIndex"])
+        now += 5_000
+        assertEquals(emptyList(), state.drain(token))
+        assertEquals(emptyList(), state.drain(token))
+        assertEquals(before + 3, calls["queryIndex"])
+    }
+
+    @Test
+    fun `an empty result is not cached when the poll state was evicted and recreated mid-query`() {
+        var now = System.currentTimeMillis()
+        lateinit var state: DynamoMailboxState
+        val token = freshToken()
+        var race = false
+        state =
+            countingStore(mutableMapOf(), clock = { now }) { name, args ->
+                val req = args.getOrNull(0) as? software.amazon.awssdk.services.dynamodb.model.QueryRequest
+                if (name == "query" && req?.indexName() != null && race) {
+                    race = false
+                    state.evict() // drops the idle entry the drain read
+                    assertTrue(state.post(token, JsonPrimitive("new"), "new-1")) // recreates it
+                    return@countingStore software.amazon.awssdk.services.dynamodb.model.QueryResponse.builder().build()
+                }
+                null
+            }
+        assertTrue(state.post(token, JsonPrimitive("old"), "old-1"))
+        state.deleteById(token, "old-1")
+        now += 11 * 60_000L // the entry is idle, so evict() may remove it
+        race = true
+        assertEquals(emptyList(), state.drain(token))
+        now += 10_000
+        assertEquals(listOf<kotlinx.serialization.json.JsonElement>(JsonPrimitive("new")), state.drain(token))
+    }
+
     @Test
     fun `the depth re-count reads strongly consistent`() {
         val consistent = mutableListOf<Boolean?>()

@@ -534,6 +534,24 @@ class DynamoMailboxState(
     private val locks = StripedLocks()
     private val depthCounts = ConcurrentHashMap<String, CachedDepth>()
 
+    /**
+     * Per-token state behind drain()'s negative cache. [gen] is a unique id issued at each post() write (before
+     * and after each), [lastPostAt] is the clock at the last bump, and [emptyAt] is the clock
+     * when a drain query that came back empty started (null: none cached).
+     */
+    private data class EmptyPollState(val gen: Long, val lastPostAt: Long, val emptyAt: Long?)
+
+    private val emptyPolls = ConcurrentHashMap<String, EmptyPollState>()
+
+    // Generations come from one counter shared by all tokens and never reused, so an entry evicted
+    // and recreated can never match the generation a drain read before the eviction.
+    private val nextPollGen = java.util.concurrent.atomic.AtomicLong()
+
+    private fun noteWrite(token: String) {
+        val now = clock()
+        emptyPolls.compute(token) { _, _ -> EmptyPollState(nextPollGen.incrementAndGet(), now, null) }
+    }
+
     /** A token's live message count, and when it was last counted from the table (ms). */
     private data class CachedDepth(val count: Int, val countedAt: Long)
 
@@ -630,6 +648,12 @@ class DynamoMailboxState(
         const val MAX_BATCH_RETRIES = 8
         const val MAX_DEPTH_CACHE_ENTRIES = 50_000
 
+        // drain()'s negative cache: an empty result is trusted this long, and not recorded within
+        // the quiet period after a post (GSI reads are eventually consistent).
+        const val EMPTY_POLL_MAX_AGE_MS = 60_000L
+        const val EMPTY_POLL_QUIET_MS = 5_000L
+        const val EMPTY_POLL_STATE_IDLE_MS = 10 * 60_000L
+
         // A cached depth is re-counted from the table once it's this old, so rows the TTL sweep
         // deleted (which never decrement it) stop counting against MAX_QUEUE_DEPTH.
         const val DEPTH_CACHE_RESEED_MS = 24 * 60 * 60 * 1000L
@@ -702,6 +726,7 @@ class DynamoMailboxState(
             // after a landed attempt), and its retry won't increment for that row (deduped above,
             // or the message put below finds the row), so the cached count would stay one short.
             // Drop it; the next post re-counts exactly.
+            noteWrite(token)
             try {
                 if (msgId != null) {
                     // Two plain PutItems rather than one TransactWriteItems: a transaction bills every
@@ -746,6 +771,10 @@ class DynamoMailboxState(
             } catch (e: Throwable) {
                 depthCounts.remove(token)
                 throw e
+            } finally {
+                // After the write (committed or not), so a drain that began before it can't cache
+                // its empty result over the new row.
+                noteWrite(token)
             }
             depthCounts.computeIfPresent(token) { _, cached -> cached.copy(count = depth + 1) }
             return true
@@ -822,7 +851,9 @@ class DynamoMailboxState(
         val cached = depthCounts[token]
         if (cached != null && now - cached.countedAt < DEPTH_CACHE_RESEED_MS) return cached.count
         val count = queryLiveDepth(token, now)
-        depthCounts[token] = CachedDepth(count, now)
+        // Entries at 0 are kept, so the cache is bounded here as well as by evict(): past twice
+        // the cap a token is simply re-counted on its next post instead of being cached.
+        if (cached != null || depthCounts.size < 2 * MAX_DEPTH_CACHE_ENTRIES) depthCounts[token] = CachedDepth(count, now)
         return count
     }
 
@@ -871,8 +902,10 @@ class DynamoMailboxState(
         token: String,
         by: Int,
     ) {
+        // Reaching exactly 0 keeps the entry (the next post needs no COUNT query); freeing more
+        // than the cache thought was queued means it was wrong, so drop it to be re-counted.
         depthCounts.computeIfPresent(token) { _, cached ->
-            (cached.count - by).takeIf { it > 0 }?.let { cached.copy(count = it) }
+            (cached.count - by).takeIf { it >= 0 }?.let { cached.copy(count = it) }
         }
     }
 
@@ -887,7 +920,14 @@ class DynamoMailboxState(
      */
     override fun drain(token: String): List<JsonElement>? {
         if (!limiter.checkGet(token)) return null
-        val now = clock() / 1000
+        val startMs = clock()
+        val before = emptyPolls[token]
+        // Negative cache: the only way a row appears is post() on this one JVM, which resets this
+        // state (see EmptyPollState), and rows only ever leave a queue, so an empty result stays
+        // empty until the next post. Capped at EMPTY_POLL_MAX_AGE_MS in case that ever stops holding
+        // (e.g. a second machine during a deploy overlap).
+        before?.emptyAt?.let { if (startMs - it in 0 until EMPTY_POLL_MAX_AGE_MS) return emptyList() }
+        val now = startMs / 1000
         val messages = mutableListOf<JsonElement>()
         var badCompact = 0
         var badPayload = 0
@@ -972,7 +1012,30 @@ class DynamoMailboxState(
                 badPayload,
             )
         }
+        if (messages.isEmpty() && badCompact + badPayload == 0) cacheEmptyPoll(token, before, startMs)
         return messages
+    }
+
+    /**
+     * Records that the drain query started at [startMs] found nothing, unless a post to [token]
+     * may be racing it: [before] is the state read before the query, and the entry is only written
+     * if no post bumped it since. Also skipped for [EMPTY_POLL_QUIET_MS] after a post, because the
+     * index is eventually consistent and may not show a just-written row yet.
+     */
+    private fun cacheEmptyPoll(
+        token: String,
+        before: EmptyPollState?,
+        startMs: Long,
+    ) {
+        if (before != null && startMs - before.lastPostAt < EMPTY_POLL_QUIET_MS) return
+        if (before == null && emptyPolls.size >= 2 * MAX_DEPTH_CACHE_ENTRIES) return
+        emptyPolls.compute(token) { _, cur ->
+            if ((cur?.gen ?: 0L) == (before?.gen ?: 0L)) {
+                EmptyPollState(cur?.gen ?: 0L, cur?.lastPostAt ?: Long.MIN_VALUE / 2, startMs)
+            } else {
+                cur
+            }
+        }
     }
 
     override fun deleteById(
@@ -1013,7 +1076,11 @@ class DynamoMailboxState(
         val ids = msgIds.distinct()
         withDepthLock(token) {
             var existingCount = 0
-            ids.chunked(100).forEach { chunk ->
+            // The existence check only feeds decrementDepth(), which does nothing for a token with
+            // no cached entry, or one cached at 0 (nothing live to free; the cache only ever
+            // overcounts). Skip the BatchGetItem then: usually a retried ack or one after a restart.
+            val needsCount = (depthCounts[token]?.count ?: 0) > 0
+            (if (needsCount) ids else emptyList()).chunked(100).forEach { chunk ->
                 var keysToCheck =
                     chunk.map { msgId ->
                         mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS(msgId))
@@ -1112,6 +1179,11 @@ class DynamoMailboxState(
         if (depthCounts.size > MAX_DEPTH_CACHE_ENTRIES) {
             for (token in depthCounts.keys) synchronized(getLock(token)) { depthCounts.remove(token) }
         }
+        // Drop idle poll state. Only entries whose last post is long past: removing one that a
+        // concurrent drain is about to compare against would reset its generation, so keep any
+        // that a post touched recently.
+        val cutoff = clock() - EMPTY_POLL_STATE_IDLE_MS
+        emptyPolls.entries.removeIf { (_, st) -> st.lastPostAt < cutoff && (st.emptyAt ?: Long.MIN_VALUE) < cutoff }
     }
 
     override fun close() {
