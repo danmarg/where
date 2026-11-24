@@ -89,12 +89,4 @@ class PollPolicyTest {
             )
         for (r in rows) assertEquals(r.wake, PollPolicy.shouldWakeOnFix(now, r.last, r.rapid, r.fg), r.name)
     }
-
-    @Test
-    fun `invites are polled only while visible or rapid`() {
-        assertEquals(true, PollPolicy.shouldPollInvites(appForeground = true, rapid = false))
-        assertEquals(true, PollPolicy.shouldPollInvites(appForeground = false, rapid = true))
-        assertEquals(true, PollPolicy.shouldPollInvites(appForeground = true, rapid = true))
-        assertEquals(false, PollPolicy.shouldPollInvites(appForeground = false, rapid = false))
-    }
 }

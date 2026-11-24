@@ -55,13 +55,12 @@ class LocationViewModel(
     e2eeManagerParam: E2eeManager? = null,
     userStoreParam: UserStore? = null,
     locationClientParam: LocationClient? = null,
-    startPolling: Boolean = true,
     private val clock: () -> Long = { System.currentTimeMillis() },
     locationSourceParam: LocationSource? = null,
     uiStateStoreParam: UiStateSource? = null,
 ) : AndroidViewModel(app) {
     // Secondary constructor for reflection-based instantiation in release builds.
-    constructor(app: Application) : this(app, null, null, null, true)
+    constructor(app: Application) : this(app, null, null, null)
 
     // Use the Application-level singletons so LocationService and this ViewModel share the same
     // E2EE state. Fall back to creating new instances when running under test (app is not
@@ -309,11 +308,7 @@ class LocationViewModel(
             // Symmetric to the stop fan-out: ask the service to broadcast our current location
             // to every (non-paused) friend immediately, so peers don't wait for the next
             // regular location tick (up to a heartbeat interval if stationary/backgrounded).
-            val intent =
-                Intent(getApplication(), LocationService::class.java).apply {
-                    action = LocationService.ACTION_FORCE_PUBLISH
-                }
-            startLocationService(intent)
+            forcePublish()
         }
     }
 
@@ -352,12 +347,7 @@ class LocationViewModel(
                 }
             }
         } else {
-            val intent =
-                Intent(getApplication(), LocationService::class.java).apply {
-                    action = LocationService.ACTION_FORCE_PUBLISH
-                    putExtra(LocationService.EXTRA_FRIEND_ID, id)
-                }
-            startLocationService(intent)
+            forcePublish(id)
         }
     }
 
@@ -504,6 +494,9 @@ class LocationViewModel(
         qr: QrPayload,
         friendName: String,
     ) {
+        // A second confirm while the first exchange runs (a double tap) is ignored before it can
+        // touch UI state; the first keeps the spinner.
+        if (!_isExchanging.compareAndSet(false, true)) return
         Log.d(TAG, "confirmQrScan: friendName=$friendName")
         uiStateStore.onPendingQrForNaming(null)
         locationSource.confirmQrScan()
@@ -514,7 +507,6 @@ class LocationViewModel(
         uiStateStore.setInviteSheetShowing(false)
 
         val qrWithName = qr.copy(suggestedName = friendName)
-        _isExchanging.value = true
         viewModelScope.launch {
             try {
                 val (initPayload, bobEntry) = e2eeManager.processScannedQr(qrWithName, displayName.value)
@@ -535,19 +527,10 @@ class LocationViewModel(
                         return@launch
                     }
                     if (isSharingLocation.value) {
-                        val intent =
-                            Intent(getApplication(), LocationService::class.java).apply {
-                                action = LocationService.ACTION_FORCE_PUBLISH
-                                putExtra(LocationService.EXTRA_FRIEND_ID, bobEntry.id)
-                            }
-                        startLocationService(intent)
+                        forcePublish(bobEntry.id)
                     }
 
-                    withContext(Dispatchers.Main.immediate) {
-                    }
-                    locationSource.markAwaitingFirstUpdate(bobEntry.id)
-                    locationSource.triggerRapidPoll()
-                    locationSource.wakePoll()
+                    expectFirstUpdate(bobEntry.id)
                 } catch (e: Exception) {
                     Log.e(TAG, "confirmQrScan inner failure: ${e.message}")
                     updateStatus(e)
@@ -588,17 +571,10 @@ class LocationViewModel(
                         locationSource.onFriendsUpdated(e2eeManager.listFriends())
                         locationSource.onPendingInvitesUpdated(e2eeManager.listPendingInvites())
                     }
-                    locationSource.markAwaitingFirstUpdate(entry.id)
-                    locationSource.triggerRapidPoll()
-                    locationSource.wakePoll()
+                    expectFirstUpdate(entry.id)
                     try {
                         if (isSharingLocation.value) {
-                            val intent =
-                                Intent(getApplication(), LocationService::class.java).apply {
-                                    action = LocationService.ACTION_FORCE_PUBLISH
-                                    putExtra(LocationService.EXTRA_FRIEND_ID, entry.id)
-                                }
-                            startLocationService(intent)
+                            forcePublish(entry.id)
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "confirmPendingInit: inner failure: ${e.message}")
@@ -643,17 +619,27 @@ class LocationViewModel(
         }
     }
 
+    /** Tail of a new pairing: poll fast until the friend's first update arrives. */
+    private fun expectFirstUpdate(friendId: String) {
+        locationSource.markAwaitingFirstUpdate(friendId)
+        locationSource.triggerRapidPoll()
+        locationSource.wakePoll()
+    }
+
+    /** Asks the service to broadcast now: to one friend, or to every non-paused friend. */
+    private fun forcePublish(friendId: String? = null) {
+        startLocationService(
+            Intent(getApplication(), LocationService::class.java).apply {
+                action = LocationService.ACTION_FORCE_PUBLISH
+                if (friendId != null) putExtra(LocationService.EXTRA_FRIEND_ID, friendId)
+            },
+        )
+    }
+
     fun setInviteSheetShowing(showing: Boolean) {
         uiStateStore.setInviteSheetShowing(showing)
         if (showing) {
             locationSource.triggerRapidPoll()
-        }
-    }
-
-    fun markCurrentInviteExported() {
-        val current = _inviteState.value
-        if (current is InviteState.Pending) {
-            markInviteExported(current.qr.ekPub)
         }
     }
 
@@ -743,9 +729,7 @@ class LocationViewModel(
         } else if (hasPermission && notified) {
             prefs.edit().putBoolean(KEY_STOPPED_FOR_MISSING_PERMISSION, false).apply()
             if (isSharingLocation.value) {
-                startLocationService(
-                    Intent(app, LocationService::class.java).apply { action = LocationService.ACTION_FORCE_PUBLISH },
-                )
+                forcePublish()
             }
         }
     }

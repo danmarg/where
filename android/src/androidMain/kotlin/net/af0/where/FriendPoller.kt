@@ -37,15 +37,12 @@ internal fun Context.canRunLocationService(): Boolean =
 internal fun Context.needsBackgroundService(userStore: UserStore): Boolean = userStore.isSharingLocation.value && canRunLocationService()
 
 /**
- * Serializes poll cycles and holds the hourly invite-cleanup timestamp. One instance is shared by
+ * Serializes poll cycles. One instance is shared by
  * every [FriendPoller] in the app (see [WhereApplication.pollGate]) so the service, worker and
- * foreground loop don't surface the same handshake twice or repeat cleanup; tests get their own.
+ * foreground loop don't surface the same handshake twice; tests get their own.
  */
 internal class PollGate {
     val mutex = Mutex()
-
-    @Volatile
-    var lastCleanupTime: Long = 0L
 }
 
 /**
@@ -75,19 +72,6 @@ internal class FriendPoller(
     private suspend fun pollLocked(source: WakeSource) {
         try {
             Log.d(TAG, "Polling for location updates (source=${source.value})")
-            val now = clock()
-            if (now - gate.lastCleanupTime > 3600_000L) {
-                // Housekeeping must never starve the poll, ack and keepalive below; a failure is
-                // retried in an hour like a success.
-                gate.lastCleanupTime = now
-                try {
-                    e2eeManager.cleanupExpiredInvites()
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.w(TAG, "Expired-invite cleanup failed: ${e.message}")
-                }
-            }
             val updates =
                 locationClient.poll(
                     isForeground = locationSource.isAppInForeground.value,
@@ -145,9 +129,6 @@ internal class FriendPoller(
 
     /** Surfaces incoming handshakes. Returns true if it reported an error to the UI. */
     private suspend fun pollPendingInvites(): Boolean {
-        // Gated like iOS: a GET per pending invite every cycle is only worth it while someone
-        // can be waiting on the answer.
-        if (!PollPolicy.shouldPollInvites(locationSource.isAppInForeground.value, isRapidPolling())) return false
         try {
             val results = locationClient.pollPendingInvites()
             if (results.isEmpty()) return false

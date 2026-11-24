@@ -506,15 +506,10 @@ class E2eeManager(
      */
     data class PollBatchResult(
         val decryptedLocations: List<LocationPlaintext>,
-        val anySuccess: Boolean,
-        val hadSilentDrops: Boolean,
         /** Ids to delete from the polled mailbox (the core's [ProtocolCore.Effect.Ack]). */
         val processedIds: List<String>,
         val anyReplay: Boolean = false,
-        val failCount: Int = 0,
-        val hadStateUpdate: Boolean = false,
         val hadDhRatchet: Boolean = false,
-        val shouldAck: Boolean = true,
         /** The polled mailbox, if the receive token rotated away from it (the core's [ProtocolCore.Effect.RetireToken]). */
         val retiredToken: String? = null,
     )
@@ -624,14 +619,9 @@ class E2eeManager(
             PersistenceAction.Update(updatedEntry) to
                 PollBatchResult(
                     decryptedLocations = decryptedLocations,
-                    anySuccess = report.anySuccess,
-                    hadSilentDrops = report.silentDrops > 0,
                     processedIds = idsToAck,
                     anyReplay = report.anyReplay,
-                    failCount = report.failCount,
-                    hadStateUpdate = report.stateAdvanced,
                     hadDhRatchet = report.dhRatchet,
-                    shouldAck = idsToAck.isNotEmpty(),
                     retiredToken = step.effects.filterIsInstance<ProtocolCore.Effect.RetireToken>().singleOrNull()?.mailbox,
                 )
         }

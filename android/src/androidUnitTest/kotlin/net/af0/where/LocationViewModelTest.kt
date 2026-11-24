@@ -280,7 +280,6 @@ class LocationViewModelTest {
                     app,
                     e2eeManagerParam = store,
                     locationClientParam = client,
-                    startPolling = false,
                     locationSourceParam = fakeLocationSource,
                     uiStateStoreParam = FakeUiStateStore(),
                 )
@@ -328,7 +327,6 @@ class LocationViewModelTest {
                 LocationViewModel(
                     app,
                     e2eeManagerParam = E2eeManager(createTestSqlDriver(), UnconfinedTestDispatcher()),
-                    startPolling = false,
                     locationSourceParam = source,
                     uiStateStoreParam = uiStore,
                 )
@@ -363,7 +361,6 @@ class LocationViewModelTest {
                     app,
                     e2eeManagerParam = store,
                     locationClientParam = client,
-                    startPolling = false,
                     locationSourceParam = source,
                     uiStateStoreParam = FakeUiStateStore(),
                 )
@@ -402,7 +399,6 @@ class LocationViewModelTest {
                     app,
                     e2eeManagerParam = store,
                     locationClientParam = client,
-                    startPolling = false,
                     locationSourceParam = source,
                     uiStateStoreParam = FakeUiStateStore(),
                 )
@@ -450,7 +446,6 @@ class LocationViewModelTest {
                     app,
                     e2eeManagerParam = store,
                     locationClientParam = client,
-                    startPolling = false,
                     locationSourceParam = source,
                     uiStateStoreParam = FakeUiStateStore(),
                 )
@@ -490,7 +485,6 @@ class LocationViewModelTest {
                     app,
                     e2eeManagerParam = store,
                     locationClientParam = client,
-                    startPolling = false,
                     locationSourceParam = source,
                     uiStateStoreParam = uiStore,
                 )
@@ -537,7 +531,6 @@ class LocationViewModelTest {
                     app,
                     e2eeManagerParam = store,
                     locationClientParam = client,
-                    startPolling = false,
                     locationSourceParam = source,
                     uiStateStoreParam = uiStore,
                 )
@@ -580,7 +573,6 @@ class LocationViewModelTest {
                     app,
                     e2eeManagerParam = E2eeManager(createTestSqlDriver(), UnconfinedTestDispatcher()),
                     userStoreParam = userStore,
-                    startPolling = false,
                     locationSourceParam = source,
                     uiStateStoreParam = FakeUiStateStore(),
                 )
@@ -616,7 +608,6 @@ class LocationViewModelTest {
                     app,
                     e2eeManagerParam = store,
                     locationClientParam = client,
-                    startPolling = false,
                     locationSourceParam = source,
                     uiStateStoreParam = FakeUiStateStore(),
                 )
@@ -663,7 +654,6 @@ class LocationViewModelTest {
                     app,
                     e2eeManagerParam = store,
                     locationClientParam = client,
-                    startPolling = false,
                     locationSourceParam = source,
                     uiStateStoreParam = uiStateStore,
                 )
@@ -734,7 +724,6 @@ class LocationViewModelTest {
                     app,
                     e2eeManagerParam = store,
                     locationClientParam = client,
-                    startPolling = false,
                     locationSourceParam = source,
                     uiStateStoreParam = FakeUiStateStore(),
                 )
@@ -791,7 +780,6 @@ class LocationViewModelTest {
                     e2eeManagerParam = E2eeManager(createTestSqlDriver(), UnconfinedTestDispatcher()),
                     locationClientParam = mockClient,
                     userStoreParam = net.af0.where.e2ee.UserStore(FakeRawKeyValueStorage()),
-                    startPolling = false,
                     locationSourceParam = source,
                     uiStateStoreParam = FakeUiStateStore(),
                 )
@@ -826,7 +814,6 @@ class LocationViewModelTest {
                     e2eeManagerParam = E2eeManager(createTestSqlDriver(), UnconfinedTestDispatcher()),
                     locationClientParam = mockClient,
                     userStoreParam = userStore,
-                    startPolling = false,
                     locationSourceParam = TestFakeLocationSource(),
                     uiStateStoreParam = FakeUiStateStore(),
                 )
@@ -854,7 +841,6 @@ class LocationViewModelTest {
                     e2eeManagerParam = E2eeManager(createTestSqlDriver(), UnconfinedTestDispatcher()),
                     locationClientParam = mockClient,
                     userStoreParam = userStore,
-                    startPolling = false,
                     locationSourceParam = TestFakeLocationSource(),
                     uiStateStoreParam = FakeUiStateStore(),
                 )
@@ -889,7 +875,6 @@ class LocationViewModelTest {
                     e2eeManagerParam = E2eeManager(createTestSqlDriver(), UnconfinedTestDispatcher()),
                     locationClientParam = mockClient,
                     userStoreParam = userStore,
-                    startPolling = false,
                     locationSourceParam = source,
                     uiStateStoreParam = FakeUiStateStore(),
                 )
@@ -916,7 +901,6 @@ class LocationViewModelTest {
                 LocationViewModel(
                     app,
                     e2eeManagerParam = store,
-                    startPolling = false,
                     locationSourceParam = TestFakeLocationSource(),
                     uiStateStoreParam = uiStateStore,
                 )
@@ -947,7 +931,6 @@ class LocationViewModelTest {
                 LocationViewModel(
                     app,
                     e2eeManagerParam = E2eeManager(createTestSqlDriver(), UnconfinedTestDispatcher()),
-                    startPolling = false,
                     locationSourceParam = TestFakeLocationSource(),
                     uiStateStoreParam = FakeUiStateStore(),
                 )
@@ -978,7 +961,6 @@ class LocationViewModelTest {
             app,
             e2eeManagerParam = store,
             locationClientParam = client,
-            startPolling = false,
             locationSourceParam = source,
             uiStateStoreParam = FakeUiStateStore(),
         )
@@ -1141,7 +1123,6 @@ class LocationViewModelTest {
             app,
             e2eeManagerParam = E2eeManager(createTestSqlDriver(), UnconfinedTestDispatcher()),
             locationClientParam = mockk<LocationClient>(relaxed = true),
-            startPolling = false,
             locationSourceParam = source,
             uiStateStoreParam = FakeUiStateStore(),
         )
@@ -1202,7 +1183,6 @@ class LocationViewModelTest {
                 LocationViewModel(
                     app,
                     e2eeManagerParam = store,
-                    startPolling = false,
                     locationSourceParam = TestFakeLocationSource(),
                     uiStateStoreParam = FakeUiStateStore(),
                 )
@@ -1270,7 +1250,6 @@ class LocationViewModelTest {
                 e2eeManagerParam = E2eeManager(createTestSqlDriver(), UnconfinedTestDispatcher()),
                 userStoreParam = userStore,
                 locationClientParam = client,
-                startPolling = false,
                 locationSourceParam = source,
                 uiStateStoreParam = FakeUiStateStore(),
             )

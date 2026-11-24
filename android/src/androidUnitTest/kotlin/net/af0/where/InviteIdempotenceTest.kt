@@ -6,6 +6,7 @@ import app.cash.sqldelight.driver.android.AndroidSqliteDriver
 import dev.icerock.moko.resources.desc.Resource
 import dev.icerock.moko.resources.desc.StringDesc
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -68,7 +69,6 @@ class InviteIdempotenceTest {
                 app,
                 e2eeManagerParam = e2ee,
                 locationClientParam = mockk(relaxed = true),
-                startPolling = false,
                 locationSourceParam = source,
                 uiStateStoreParam = uiState,
             )
@@ -160,6 +160,22 @@ class InviteIdempotenceTest {
         }
 
     @Test
+    fun doubleTapConfirmIsIgnoredWhileTheFirstExchangeRuns() =
+        runTest(testDispatcher) {
+            val qr = invite()
+            vm.processQrUrl(qr.toUrl())
+
+            vm.confirmQrScan(qr, "Alice")
+            vm.confirmQrScan(qr, "Alice")
+            assertTrue(vm.isExchanging.value, "the second tap leaves the first exchange's spinner alone")
+            advanceUntilIdle()
+
+            coVerify(exactly = 1) { e2ee.processScannedQr(any(), any()) }
+            assertNull(vm.inviteError.value)
+            assertFalse(vm.isExchanging.value)
+        }
+
+    @Test
     fun realManagerConfirmedTwiceYieldsOneFriendAndOneError() =
         runTest(testDispatcher) {
             val real = E2eeManager(inMemoryDriver(), UnconfinedTestDispatcher())
@@ -168,7 +184,6 @@ class InviteIdempotenceTest {
                     app,
                     e2eeManagerParam = real,
                     locationClientParam = mockk(relaxed = true),
-                    startPolling = false,
                     locationSourceParam = source,
                     uiStateStoreParam = uiState,
                 )

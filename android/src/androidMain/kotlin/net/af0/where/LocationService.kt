@@ -467,8 +467,7 @@ class LocationService : Service() {
                 // The first emission is the current value: nothing happened if it is the snapshot.
                 if (!first || it != initialForeground) {
                     events.trySend(ServiceEvent.Visibility(it, elapsedClock()))
-                    // Coming back: poll now, not at the end of a 5 min background sleep. Pending
-                    // invites aren't polled in the background (PollPolicy.shouldPollInvites).
+                    // Coming back: poll now, not at the end of a 5 min background sleep.
                     if (it) locationSource.wakePoll()
                 }
                 first = false
@@ -1524,18 +1523,8 @@ class LocationService : Service() {
         const val STATIONARY_ENDED = "Stationary: ended"
         const val STATIONARY_MOVED_UNTRIGGERED = "Stationary: moved without a motion trigger"
 
-        /**
-         * Interval to wait before forcing a fresh GPS fix if stationary (§5.3).
-         * This "pokes" the fused location provider to ensure background updates
-         * flow even when the OS throttles streaming updates in sleep mode.
-         */
-        const val STATIONARY_FORCE_UPDATE_THRESHOLD_MS = 5 * 60 * 1000L
-
         /** Interval between heartbeat sends when stationary. */
         const val HEARTBEAT_INTERVAL_MS = 300_000L
-
-        /** Backoff delays for in-wake send retries on transient network failure. */
-        val SEND_RETRY_DELAYS_MS = longArrayOf(5_000L, 20_000L)
 
         /**
          * Wake lock timeout. Long enough to cover a GPS fix (~10 s) plus a network send on a
@@ -1571,7 +1560,7 @@ class LocationService : Service() {
         var lastPollAtMs: Long = 0L
             internal set
 
-        /** Overridable in tests. */
+        /** Overridable in tests. Mutable global (M14): moving it behind an injected clock is a wider redesign. */
         var clock: () -> Long = { System.currentTimeMillis() }
 
         /** Monotonic time, including deep sleep, for the send scheduler. Tests replace it. */

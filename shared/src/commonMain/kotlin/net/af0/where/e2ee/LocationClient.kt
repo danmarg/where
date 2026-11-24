@@ -324,10 +324,18 @@ open class LocationClient(
             }
 
             val now = currentTimeSeconds()
-            if (now - lastCleanupTime > 3600) {
+            // The one place expired invites are cleaned up, for every platform: at most hourly, a
+            // failure retried in an hour like a success, and never able to starve the poll below.
+            // Check-and-set under the lock so overlapping polls don't both clean up.
+            val cleanupDue =
+                mutexLock.withLock {
+                    (now - lastCleanupTime > 3600).also { if (it) lastCleanupTime = now }
+                }
+            if (cleanupDue) {
                 try {
                     store.cleanupExpiredInvites()
-                    lastCleanupTime = now
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     // Ignore
                 }

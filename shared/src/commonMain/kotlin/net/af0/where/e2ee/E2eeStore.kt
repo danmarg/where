@@ -269,26 +269,6 @@ internal class E2eeStore(
         if (!keepOutbox) database.outboxQueries.deleteOutboxByFriendId(friendId)
     }
 
-    suspend fun insertOutbox(
-        msgId: String,
-        friendId: String,
-        token: String,
-        payloadBlob: ByteArray,
-        createdAt: Long,
-    ) = withStoreLock {
-        insertOutboxInternal(msgId, friendId, token, payloadBlob, createdAt)
-    }
-
-    internal fun insertOutboxInternal(
-        msgId: String,
-        friendId: String,
-        token: String,
-        payloadBlob: ByteArray,
-        createdAt: Long,
-    ) {
-        database.outboxQueries.insertOutbox(msgId, friendId, token, payloadBlob, createdAt)
-    }
-
     suspend fun deleteOutboxByMsgId(
         friendId: String,
         msgId: String,

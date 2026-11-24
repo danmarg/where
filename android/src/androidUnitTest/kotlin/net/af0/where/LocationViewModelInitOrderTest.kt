@@ -65,7 +65,6 @@ class LocationViewModelInitOrderTest {
             e2eeManagerParam = mockk(relaxed = true),
             userStoreParam = UserStore(MemoryStorage()),
             locationClientParam = mockk(relaxed = true),
-            startPolling = false,
             locationSourceParam = TestFakeLocationSource(initialForeground = true),
             uiStateStoreParam = FakeUiStateStore(),
         )

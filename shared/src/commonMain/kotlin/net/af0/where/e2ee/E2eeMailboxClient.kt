@@ -114,7 +114,13 @@ object KtorMailboxClient : MailboxClient {
     private var consecutiveFailures = 0
     private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    /** Notified (best-effort) whenever [CONSECUTIVE_FAILURE_RESET_THRESHOLD] triggers an auto-reset. */
+    /**
+     * Notified (best-effort) whenever [CONSECUTIVE_FAILURE_RESET_THRESHOLD] triggers an auto-reset.
+     *
+     * Known exception to the no-mutable-global-state rule (M14): this object is the one process-wide
+     * HTTP client and the service sets this single hook in onCreate. Replacing it with an injected
+     * client (constructor-passed, per-app instance) is a redesign, deliberately not done here.
+     */
     var onConnectionReset: (() -> Unit)? = null
 
     private suspend fun <T> withFailureTracking(block: suspend () -> T): T {

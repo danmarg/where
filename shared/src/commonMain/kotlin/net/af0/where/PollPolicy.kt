@@ -99,15 +99,4 @@ object PollPolicy {
         val age = nowMs - (lastPollAtMs ?: return true)
         return age < 0 || age >= intervalMs(rapid, appForeground)
     }
-
-    /**
-     * Whether a poll cycle also polls the pending-invite discovery mailboxes (one GET each): only
-     * while the app is visible or [isRapid] (invite sheet, naming screen, a fresh incoming invite,
-     * a recent trigger), the same rule as iOS's `updateUi || isInviteSheetShowing`. Background
-     * maintenance polls skip it; opening the app polls them.
-     */
-    fun shouldPollInvites(
-        appForeground: Boolean,
-        rapid: Boolean,
-    ): Boolean = appForeground || rapid
 }

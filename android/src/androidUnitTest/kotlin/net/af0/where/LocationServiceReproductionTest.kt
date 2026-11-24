@@ -114,7 +114,6 @@ class LocationServiceReproductionTest {
                 coEvery { mockClient.pollPendingInvites() } returns listOf(pollResult)
                 coEvery { mockStore.listPendingInvites() } returns listOf(pendingInvite)
                 coEvery { mockStore.listFriends() } returns emptyList()
-                fakeLocationSource.setAppForeground(true) // invites are only polled while visible or rapid
 
                 service.doPoll()
                 advanceUntilIdle()

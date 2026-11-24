@@ -185,6 +185,70 @@ class PollCostTest {
             assertEquals(0, p.driver.executed("DELETE FROM OwedStops"))
         }
 
+    // ---- Invite cleanup (M10): one place, at most hourly ----
+
+    /** Seconds from an invite's creation until the inviter drops it. */
+    private suspend fun inviteRetentionSeconds(): Long {
+        val m = testE2eeManager(createTestSqlDriver())
+        val qr = m.createInvite("Probe")
+        return requireNotNull(qr.expiresAt) + 2 * INVITE_EXPIRY_GRACE_SECONDS - clock.currentTimeSeconds()
+    }
+
+    /** Creates an invite on [manager] that the next cleanup drops once [afterSeconds] have passed. */
+    private suspend fun Setup.inviteDroppedAfter(afterSeconds: Long) {
+        val back = inviteRetentionSeconds() - afterSeconds
+        clock.advanceSeconds(-back)
+        aliceManager.createInvite("Late")
+        clock.advanceSeconds(back)
+    }
+
+    private fun CountingDriver.inviteDeletes() = executed("DELETE FROM PendingInvites")
+
+    @Test
+    fun `expired invites are cleaned up at most once an hour`() =
+        runTest {
+            val p = paired()
+            val alice = LocationClient("http://localhost", p.aliceManager, p.mailbox)
+            p.inviteDroppedAfter(1800)
+            p.driver.reset()
+
+            alice.poll(isForeground = true, pausedFriendIds = emptySet())
+            assertEquals(0, p.driver.inviteDeletes(), "not yet expired")
+
+            clock.advanceSeconds(1801)
+            alice.poll(isForeground = true, pausedFriendIds = emptySet())
+            assertEquals(0, p.driver.inviteDeletes(), "expired, but the hour has not passed")
+            assertEquals(1, p.aliceManager.listPendingInvites().size)
+
+            clock.advanceSeconds(3600)
+            alice.poll(isForeground = true, pausedFriendIds = emptySet())
+            assertEquals(0, p.aliceManager.listPendingInvites().size, "cleaned up after the hour")
+        }
+
+    @Test
+    fun `a failing cleanup is retried in an hour, not on every poll, and does not abort the poll`() =
+        runTest {
+            val p = paired()
+            val alice = LocationClient("http://localhost", p.aliceManager, p.mailbox)
+            p.inviteDroppedAfter(-10)
+            p.bobSendsLocations(1)
+            p.driver.reset()
+            p.driver.failExecuteOn = "DELETE FROM PendingInvites"
+
+            // The failing cleanup neither throws nor stops the cycle from delivering.
+            val got = alice.poll(isForeground = true, pausedFriendIds = emptySet())
+            assertEquals(1, p.driver.inviteDeletes(), "cleanup attempted once")
+            assertEquals(1, got.size, "the poll still delivered")
+
+            clock.advanceSeconds(60)
+            alice.poll(isForeground = true, pausedFriendIds = emptySet())
+            assertEquals(1, p.driver.inviteDeletes(), "not retried within the hour")
+
+            clock.advanceSeconds(3600)
+            alice.poll(isForeground = true, pausedFriendIds = emptySet())
+            assertEquals(0, p.aliceManager.listPendingInvites().size, "retried after the hour and succeeded")
+        }
+
     // ---- E3 ----
 
     @Test

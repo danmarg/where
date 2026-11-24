@@ -26,16 +26,6 @@ class MailboxService(
     }
 
     /**
-     * Acknowledges receipt of a specific message by ID.
-     */
-    suspend fun ackId(
-        token: String,
-        msgId: String,
-    ) {
-        request { client.ackId(baseUrl, token, msgId) }
-    }
-
-    /**
      * Acknowledges receipt of multiple messages by IDs.
      */
     suspend fun ackIds(
