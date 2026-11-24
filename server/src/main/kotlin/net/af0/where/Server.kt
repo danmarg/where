@@ -4,6 +4,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.get
+import io.ktor.client.statement.HttpResponse
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
@@ -18,10 +19,13 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.routing.delete
 import io.ktor.utils.io.readRemaining
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.io.readByteArray
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -1145,6 +1149,10 @@ data class ServerState(
     val trustProxy: Boolean = System.getenv("TRUST_PROXY")?.toBoolean() ?: false,
     val debug: Boolean = false,
     val healthcheckPingUrl: String? = null,
+    /** Loopback URL of this server's own /health; the dead-man's-switch pings only if it answers 2xx. */
+    val selfHealthUrl: String? = null,
+    /** Where blocking store calls run (never the Netty event loop); injectable so tests can tell. */
+    val storeDispatcher: CoroutineDispatcher = Dispatchers.IO,
 )
 
 /**
@@ -1155,6 +1163,52 @@ data class ServerState(
  * while a real sustained outage (crash loop, hung process) is still caught within a few minutes.
  */
 private const val HEALTHCHECK_PING_INTERVAL_MS = 60_000L
+
+/** Lets Netty bind before the first self /health check, which would otherwise always fail at startup. */
+private const val HEALTHCHECK_INITIAL_DELAY_MS = 5_000L
+
+/**
+ * One dead-man's-switch round: if [selfHealthUrl] is set, first GET it (through the real HTTP
+ * stack, proving the server is serving) and skip the ping unless it answers 2xx; then GET
+ * [pingUrl] and treat a non-2xx answer as a failure. Returns whether the ping was delivered.
+ * Logs only exception types / status codes: client exception messages embed the request URL,
+ * and the ping URL is itself a secret.
+ */
+internal suspend fun pingHealthcheck(
+    client: HttpClient,
+    selfHealthUrl: String?,
+    pingUrl: String,
+): Boolean {
+    if (selfHealthUrl != null) {
+        val self = runCatchingCooperative { client.get(selfHealthUrl) }
+        val selfOk = self.getOrNull()?.isSuccess() == true
+        if (!selfOk) {
+            auditLog.warn("Self health check failed (${self.describeFailure()}); skipping Healthchecks.io ping")
+            return false
+        }
+    }
+    val ping = runCatchingCooperative { client.get(pingUrl) }
+    if (ping.getOrNull()?.isSuccess() != true) {
+        auditLog.warn("Healthchecks.io ping failed (${ping.describeFailure()})")
+        return false
+    }
+    return true
+}
+
+/** [runCatching] that lets coroutine cancellation propagate instead of swallowing it. */
+private inline fun <T> runCatchingCooperative(block: () -> T): Result<T> =
+    try {
+        Result.success(block())
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        Result.failure(e)
+    }
+
+private fun HttpResponse.isSuccess(): Boolean = status.value in 200..299
+
+private fun Result<HttpResponse>.describeFailure(): String =
+    exceptionOrNull()?.let { it::class.simpleName } ?: "HTTP ${getOrNull()?.status?.value}"
 
 fun main() {
     val port = System.getenv("PORT")?.toInt() ?: 8080
@@ -1182,7 +1236,12 @@ fun main() {
     if (healthcheckPingUrl == null) {
         auditLog.warn("HEALTHCHECK_PING_URL not set; no external uptime monitoring configured")
     }
-    val state = ServerState(mailbox = mailbox, healthcheckPingUrl = healthcheckPingUrl)
+    val state =
+        ServerState(
+            mailbox = mailbox,
+            healthcheckPingUrl = healthcheckPingUrl,
+            selfHealthUrl = "http://127.0.0.1:$port/health",
+        )
 
     embeddedServer(Netty, port = port, host = "0.0.0.0") {
         module(state)
@@ -1214,7 +1273,7 @@ fun Application.module(state: ServerState = ServerState()) {
     launch(Dispatchers.Default) {
         while (isActive) {
             delay(RATE_LIMIT_WINDOW_MS)
-            state.mailbox.evict()
+            withContext(state.storeDispatcher) { state.mailbox.evict() }
         }
     }
 
@@ -1228,11 +1287,9 @@ fun Application.module(state: ServerState = ServerState()) {
             }
         monitor.subscribe(ApplicationStopped) { healthcheckClient.close() }
         launch(Dispatchers.Default) {
+            delay(HEALTHCHECK_INITIAL_DELAY_MS)
             while (isActive) {
-                runCatching { healthcheckClient.get(state.healthcheckPingUrl) }
-                    // Log only the exception type: Ktor client exception messages embed the
-                    // request URL, and the ping URL is itself a secret.
-                    .onFailure { auditLog.warn("Healthchecks.io ping failed: ${it::class.simpleName}") }
+                pingHealthcheck(healthcheckClient, state.selfHealthUrl, state.healthcheckPingUrl)
                 delay(HEALTHCHECK_PING_INTERVAL_MS)
             }
         }
@@ -1269,7 +1326,8 @@ fun Application.module(state: ServerState = ServerState()) {
             if (payload !is JsonObject || !payload.containsKey("type")) {
                 return@put call.respond(HttpStatusCode.BadRequest)
             }
-            if (!state.mailbox.post(token, payload, msgId)) return@put call.respond(HttpStatusCode.TooManyRequests)
+            val accepted = withContext(state.storeDispatcher) { state.mailbox.post(token, payload, msgId) }
+            if (!accepted) return@put call.respond(HttpStatusCode.TooManyRequests)
             call.respond(HttpStatusCode.NoContent)
         }
 
@@ -1281,7 +1339,9 @@ fun Application.module(state: ServerState = ServerState()) {
                 return@get call.respond(HttpStatusCode.TooManyRequests)
             }
             val startTime = System.currentTimeMillis()
-            val messages = state.mailbox.drain(token) ?: return@get call.respond(HttpStatusCode.TooManyRequests)
+            val messages =
+                withContext(state.storeDispatcher) { state.mailbox.drain(token) }
+                    ?: return@get call.respond(HttpStatusCode.TooManyRequests)
             val responseString = json.encodeToString(messages)
             val elapsed = System.currentTimeMillis() - startTime
             if (!state.debug && elapsed < POLL_BASELINE_LATENCY_MS) delay(POLL_BASELINE_LATENCY_MS - elapsed)
@@ -1299,7 +1359,7 @@ fun Application.module(state: ServerState = ServerState()) {
             if (!state.mailbox.checkIpRateLimit(call.clientIp(state.trustProxy), RequestKind.DELETE)) {
                 return@delete call.respond(HttpStatusCode.TooManyRequests)
             }
-            state.mailbox.deleteByIds(token, ids)
+            withContext(state.storeDispatcher) { state.mailbox.deleteByIds(token, ids) }
             call.respond(HttpStatusCode.NoContent)
         }
 
@@ -1312,7 +1372,7 @@ fun Application.module(state: ServerState = ServerState()) {
             if (!state.mailbox.checkIpRateLimit(call.clientIp(state.trustProxy), RequestKind.DELETE)) {
                 return@delete call.respond(HttpStatusCode.TooManyRequests)
             }
-            state.mailbox.deleteById(token, msgId)
+            withContext(state.storeDispatcher) { state.mailbox.deleteById(token, msgId) }
             call.respond(HttpStatusCode.NoContent)
         }
     }
