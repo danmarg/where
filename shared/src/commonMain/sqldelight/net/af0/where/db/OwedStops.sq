@@ -1,0 +1,17 @@
+-- Friends a StoppedSharing was issued to but isn't queued in the outbox yet, so a restart doesn't
+-- lose the debt (see LocationClient.retryOwedStopLocked). Holds only friend ids; nothing secret.
+CREATE TABLE OwedStops (
+    friendId TEXT NOT NULL PRIMARY KEY
+);
+
+insertOwed:
+INSERT OR IGNORE INTO OwedStops(friendId) VALUES (?);
+
+deleteOwed:
+DELETE FROM OwedStops WHERE friendId = ?;
+
+getAll:
+SELECT friendId FROM OwedStops;
+
+deleteAll:
+DELETE FROM OwedStops;

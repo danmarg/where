@@ -183,13 +183,15 @@ class DeviceBindingTest {
         val driver = createTestSqlDriver()
         driver.execute(null, "DROP TABLE DeviceBinding", 0)
         driver.execute(null, "DROP TABLE ConsumedInvites", 0)
+        driver.execute(null, "DROP TABLE OwedStops", 0)
 
         WhereDatabase.Schema.migrate(driver, 4, WhereDatabase.Schema.version)
 
         val queries = WhereDatabase(driver).deviceBindingQueries
         queries.setMarker("m")
         assertNotNull(queries.getMarker().executeAsOneOrNull())
-        assertEquals(6, WhereDatabase.Schema.version)
+        assertEquals(7, WhereDatabase.Schema.version)
         assertEquals(0L, WhereDatabase(driver).consumedInvitesQueries.isConsumed(byteArrayOf(1), 0L).executeAsOne())
+        assertTrue(WhereDatabase(driver).owedStopsQueries.getAll().executeAsList().isEmpty())
     }
 }

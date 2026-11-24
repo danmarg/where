@@ -51,9 +51,16 @@ class LocationSendSchedulerTest {
         var canSend = true
         var stationary = false
         var canSendCalls = 0
+        var failCanSend = false
+        var throwNext = false
 
         override fun canSend(): Boolean {
             canSendCalls++
+            check(!failCanSend) { "gate bug" }
+            if (throwNext) {
+                throwNext = false
+                error("gate bug once")
+            }
             return canSend
         }
 
@@ -362,6 +369,37 @@ class LocationSendSchedulerTest {
             advanceTimeBy(30_000L) // the interval since the last attempt still applies
             runCurrent()
             assertEquals(far(1), h.sender.sent.single().lat)
+        }
+
+    @Test
+    fun aSendThatThrowsBeforeTheAttemptSettlesWithItsOwnReason() =
+        runTest {
+            val reasons = mutableListOf<SendReason>()
+            val h = harness()
+            val scheduler =
+                LocationSendScheduler(h.sender, h.gate, h.clock, backgroundScope, SendPolicy(), { reason, _, _, _ -> reasons += reason })
+                    .also { it.start() }
+            h.gate.failCanSend = true
+            scheduler.onFix(far(0), -122.0)
+            runCurrent()
+            scheduler.requestForced()
+            runCurrent()
+            assertEquals(listOf(SendReason.LOCATION, SendReason.FORCED), reasons)
+        }
+
+    @Test
+    fun aForcedRequestMadeMidSequenceSurvivesAThrow() =
+        runTest {
+            val h = harness()
+            h.sender.fail = { IllegalStateException("offline") }
+            h.scheduler.onFix(far(0), -122.0)
+            runCurrent() // attempt 0 fails; the sequence now waits out its first retry delay
+            h.gate.throwNext = true
+            h.sender.fail = { null }
+            h.scheduler.requestForced()
+            advanceTimeBy(5_000L) // the retry's canSend throws
+            runCurrent()
+            assertEquals(far(0), h.sender.sent.single().lat, "the request made mid-sequence still goes out")
         }
 
     @Test

@@ -34,6 +34,13 @@ const val AUTOMATED_KEEPALIVE_BACKSTOP_SECONDS = 3 * UNRESPONSIVE_SEND_INTERVAL_
 /** A removed friend's undelivered messages are retried this long - the server's own retention. */
 const val ORPHANED_OUTBOX_RETENTION_MILLIS = MAILBOX_RETENTION_SECONDS * 1000
 
+/** Backoff for a removed friend's undelivered messages after a failed round: doubles from 1 min to 6 h. */
+private const val ORPHAN_RETRY_BASE_MILLIS = 60_000L
+
+// Consecutive failures retried at once, so a brief outage costs nothing once back online.
+private const val ORPHAN_RETRY_FREE_FAILURES = 3
+private const val ORPHAN_RETRY_MAX_MILLIS = 6 * 3600_000L
+
 /**
  * Orchestrates the end-to-end encrypted location sharing protocol.
  * Unifies polling, decryption, ratchet rotation, and sending for all platforms.
@@ -52,7 +59,9 @@ open class LocationClient(
     // Shared by sendLocation() and sendRecoveryKeepalives() - a friend is eligible for routine
     // outbound traffic unless individually paused or stale. Stops ignore staleness: a friend we
     // paused can still come back (within MAILBOX_RETENTION_SECONDS) and read our earlier
-    // Locations, so they must find the stop after them too.
+    // Locations, so they must find the stop after them too. Past that retention (see
+    // [pastRetention]) the session can't recover and our earlier frames have expired, so a stop
+    // would be a write for nothing.
     private fun isActiveFriend(
         friend: FriendEntry,
         pausedFriendIds: Set<String>,
@@ -102,6 +111,9 @@ open class LocationClient(
     private val lastStopIssued = mutableMapOf<String, Long>()
     private var lastStopIssuedToAll = 0L
     private val owedStops = mutableSetOf<String>()
+
+    // owedStops is mirrored in the store so a restart keeps the debt; loaded on first use.
+    private var owedStopsLoaded = false
     private val stopsInFlight = mutableMapOf<String, Int>()
 
     private class SharingTs(var location: Long, var stop: Long)
@@ -127,7 +139,7 @@ open class LocationClient(
      * A stop is recorded before it is encrypted and queued. If that then fails or is cancelled, the
      * Locations it drops were still decided before the pause, so dropping them stays right, and
      * the stop is still owed: [poll] and [syncNow] queue it while we still aren't sharing with
-     * that friend. Owed stops are kept in memory, so one is lost if the app is killed first.
+     * that friend. Owed stops are persisted, so one survives the app being killed first.
      */
     fun sharingStamp(): Long = stopsIssued
 
@@ -144,7 +156,7 @@ open class LocationClient(
     ) = sharingOrderMutex.withLock {
         stopsIssued++
         if (friendId == null) lastStopIssuedToAll = stopsIssued else lastStopIssued[friendId] = stopsIssued
-        owedStops.addAll(owedTo)
+        for (id in owedTo) owedAddLocked(id)
         for (id in owedTo) stopsInFlight[id] = (stopsInFlight[id] ?: 0) + 1
     }
 
@@ -164,9 +176,56 @@ open class LocationClient(
     // same, after every Location before it.
     private suspend fun stopQueued(friendId: String) =
         sharingOrderMutex.withLock {
-            owedStops.remove(friendId)
+            owedRemoveLocked(friendId)
             locationIsLatest.remove(friendId)
         }
+
+    // Under sharingOrderMutex. The store write is best effort: memory stays authoritative for this
+    // run, and a failed write only costs the restart guarantee.
+    private suspend fun loadOwedLocked() {
+        if (owedStopsLoaded) return
+        try {
+            owedStops.addAll(store.listOwedStops())
+            owedStopsLoaded = true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            store.addDiagnosticEvent("load owed stops: ${e.message}", coalesceKey = "owed stops")
+        }
+    }
+
+    private suspend fun owedAddLocked(friendId: String) {
+        owedStops.add(friendId)
+        persistOwed { store.addOwedStop(friendId) }
+    }
+
+    private suspend fun owedRemoveLocked(friendId: String) {
+        loadOwedLocked()
+        if (owedStops.remove(friendId)) persistOwed { store.removeOwedStop(friendId) }
+    }
+
+    private suspend fun owedContainsLocked(friendId: String): Boolean {
+        loadOwedLocked()
+        return friendId in owedStops
+    }
+
+    private suspend fun persistOwed(write: suspend () -> Unit) {
+        try {
+            withContext(NonCancellable) { write() }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            store.addDiagnosticEvent("persist owed stop: ${e.message}", coalesceKey = "owed stops")
+        }
+    }
+
+    // Silent for the server's whole retention: what we sent has expired and the session can't be
+    // picked up again without a re-pair, so a stop or farewell would never be read. Judged from a
+    // poll that has run and come back empty (as for FriendEntry.mayNeedRepair), not the wall clock:
+    // a device that sat in a drawer looks silent for as long as it was off, until it has looked.
+    private fun pastRetention(friend: FriendEntry): Boolean =
+        friend.lastRecvTs != Long.MAX_VALUE && friend.isCaughtUp &&
+            friend.lastPollTs - friend.lastRecvTs >= MAILBOX_RETENTION_SECONDS
 
     // Once a Location with [stamp] is queued: one decided on after every stop to them means
     // sharing is on again, so nothing is owed. One decided on before a stop (it passed its check,
@@ -176,12 +235,12 @@ open class LocationClient(
         stamp: Long,
     ) = sharingOrderMutex.withLock {
         if (!stopIssuedSinceLocked(friendId, stamp)) {
-            owedStops.remove(friendId)
+            owedRemoveLocked(friendId)
             locationIsLatest.add(friendId)
         }
     }
 
-    internal suspend fun isStopOwed(friendId: String): Boolean = sharingOrderMutex.withLock { friendId in owedStops }
+    internal suspend fun isStopOwed(friendId: String): Boolean = sharingOrderMutex.withLock { owedContainsLocked(friendId) }
 
     // Under the friend's mutex (so one friend's calls don't interleave). A stop is dated after
     // every Location sent to this friend before it, and a Location no earlier than every stop
@@ -338,8 +397,13 @@ open class LocationClient(
     // original stop already dropped those decided before it.
     // A stop call still running for them will queue it itself, so it isn't sent twice.
     private suspend fun retryOwedStopLocked(friendId: String) {
-        if (!sharingOrderMutex.withLock { friendId in owedStops && friendId !in stopsInFlight }) return
-        store.getFriend(friendId) ?: return
+        if (!sharingOrderMutex.withLock { owedContainsLocked(friendId) && friendId !in stopsInFlight }) return
+        val friend = store.getFriend(friendId)
+        if (friend == null || pastRetention(friend)) {
+            // Removed, or gone silent past retention: nothing the stop could reach.
+            sharingOrderMutex.withLock { owedRemoveLocked(friendId) }
+            return
+        }
         try {
             sendMessageToFriendInternal(
                 friendId,
@@ -672,12 +736,14 @@ open class LocationClient(
     ) {
         getFriendMutex(friendId).withLock {
             val friend = store.getFriend(friendId) ?: return
-            val stopOwed = sharingOrderMutex.withLock { friendId in owedStops }
+            val stopOwed = sharingOrderMutex.withLock { owedContainsLocked(friendId) }
             // Nothing follows the farewell, so it can safely be dated after everything before it:
             // the receiver lets a Location win a same-second tie (as for a resume right after a
             // pause), and a stuck Location from this second may arrive in the same batch.
             val farewell =
-                if ((sharingEnabled && friend.id !in pausedFriendIds) || stopOwed) {
+                if (((sharingEnabled && friend.id !in pausedFriendIds) || stopOwed) &&
+                    !pastRetention(friend)
+                ) {
                     MessagePlaintext.StoppedSharing(ts = maxOf(currentTimeSeconds(), friend.lastSentTs + 1))
                 } else {
                     null
@@ -686,13 +752,14 @@ open class LocationClient(
         }
         sharingOrderMutex.withLock {
             lastStopIssued.remove(friendId)
-            owedStops.remove(friendId)
+            owedRemoveLocked(friendId)
             sharingTsByFriend.remove(friendId)
             locationIsLatest.remove(friendId)
         }
         mutexLock.withLock {
             silentDropRetries.keys.removeAll { it.startsWith("$friendId:") }
             orphanedOutboxGeneration++
+            orphanRetries.clear()
             mayHaveOrphanedOutbox = true
         }
     }
@@ -707,6 +774,12 @@ open class LocationClient(
     @kotlin.concurrent.Volatile
     private var orphanedOutboxGeneration = 0L
     private val orphanedOutboxMutex = Mutex()
+
+    // Failed orphan deliveries per friend (count, earliest next attempt in ms), in memory: a
+    // rejected farewell would otherwise be re-posted by every poll until it expires (90 days).
+    // After ORPHAN_RETRY_FREE_FAILURES failures it backs off exponentially from ORPHAN_RETRY_BASE_MILLIS to ORPHAN_RETRY_MAX_MILLIS. A
+    // removal resets it (new work), as does a restart.
+    private val orphanRetries = mutableMapOf<String, Pair<Int, Long>>()
 
     /**
      * Delivers outbox rows left behind by removed friends, in order per friend (friends in
@@ -734,6 +807,7 @@ open class LocationClient(
     private suspend fun drainOrphanedOutboxesOnce() {
         val cutoff = currentTimeMillis() - ORPHANED_OUTBOX_RETENTION_MILLIS
         val byFriend = store.getOrphanedOutbox().groupBy({ it.first }, { it.second })
+        mutexLock.withLock { orphanRetries.keys.retainAll(byFriend.keys) }
         coroutineScope {
             byFriend.map { (friendId, messages) ->
                 async {
@@ -744,12 +818,29 @@ open class LocationClient(
                         store.deleteOutboxByFriendId(friendId)
                         return@async
                     }
+                    val retry = mutexLock.withLock { orphanRetries[friendId] }
+                    if (retry != null && currentTimeMillis() < retry.second) {
+                        mayHaveOrphanedOutbox = true
+                        return@async
+                    }
                     try {
                         deliverInOrder(friendId, messages)
+                        mutexLock.withLock { orphanRetries.remove(friendId) }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
                         mayHaveOrphanedOutbox = true
+                        mutexLock.withLock {
+                            val failures = (orphanRetries[friendId]?.first ?: 0) + 1
+                            val delay =
+                                if (failures <= ORPHAN_RETRY_FREE_FAILURES) {
+                                    0L
+                                } else {
+                                    val doublings = minOf(failures - ORPHAN_RETRY_FREE_FAILURES - 1, 20)
+                                    minOf(ORPHAN_RETRY_BASE_MILLIS shl doublings, ORPHAN_RETRY_MAX_MILLIS)
+                                }
+                            orphanRetries[friendId] = failures to currentTimeMillis() + delay
+                        }
                     }
                 }
             }.awaitAll()
@@ -898,7 +989,9 @@ open class LocationClient(
     }
 
     /**
-     * Enqueue a StoppedSharing message to every active (non-paused, non-stale) friend.
+     * Enqueue a StoppedSharing message to every non-paused friend, stale ones included (they may
+     * still come back and read our earlier Locations) but not one silent past
+     * [MAILBOX_RETENTION_SECONDS], whom no stop can reach.
      * This only writes to the WAL outbox; the existing processOutboxes loop handles delivery.
      * Keepalives continue afterwards so the peer's session doesn't go stale.
      */
@@ -908,7 +1001,7 @@ open class LocationClient(
         // issued (dropping Locations decided before it) and owed to each friend, or neither.
         val activeFriends =
             withContext(NonCancellable) {
-                store.listFriends().filter { it.id !in pausedFriendIds }.also { friends ->
+                store.listFriends().filter { it.id !in pausedFriendIds && !pastRetention(it) }.also { friends ->
                     issueStop(null, owedTo = friends.map { it.id })
                 }
             }
@@ -928,7 +1021,12 @@ open class LocationClient(
      */
     @Throws(Exception::class)
     open suspend fun sendStoppedSharingToFriend(friendId: String) {
-        issueStop(friendId, owedTo = listOf(friendId))
+        val friend = store.getFriend(friendId)
+        val unreachable = friend != null && pastRetention(friend)
+        // Still issued, for the ordering stamp (it drops Locations decided before it); nothing is
+        // owed or sent to a friend no stop can reach.
+        issueStop(friendId, owedTo = if (unreachable) emptyList() else listOf(friendId))
+        if (unreachable) return
         try {
             getFriendMutex(friendId).withLock {
                 try {

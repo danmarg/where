@@ -132,6 +132,9 @@ class LocationSendScheduler(
     private var latest: Fix? = null
     private var delivered: Sent? = null
     private var forced = false
+
+    // Counts forced requests, so a send that throws clears only the request it started with.
+    private var forcedRequests = 0L
     private var heartbeatArmed = false
 
     // 0 = never. lastAttempt also counts keepalives, so the heartbeat isn't due right after one.
@@ -186,6 +189,7 @@ class LocationSendScheduler(
     /** Send the latest fix now, skipping the interval but not waiting behind a send in flight. */
     fun requestForced() {
         forced = true
+        forcedRequests++
         kick()
     }
 
@@ -313,14 +317,20 @@ class LocationSendScheduler(
                 continue
             }
             busy.value = true
+            // Before sendSequence clears the flags, so a send that throws settles with its own reason.
+            val reason = currentReason()
+            val forcedAtStart = forcedRequests
             try {
-                sendSequence()
+                sendSequence(reason)
             } catch (e: Throwable) {
                 // Only our own cancellation ends the worker; anything else would silently stop all
                 // sharing, so treat it like a failed send.
                 currentCoroutineContext().ensureActive()
+                // A forced request that threw is consumed: left set, it would skip the backoff and
+                // spin the worker. One that arrived since the sequence began is still pending.
+                if (forcedRequests == forcedAtStart) forced = false
                 backoffUntil = clock() + policy.heartbeatMs
-                settle(SendReason.LOCATION, false, null, e)
+                settle(reason, false, null, e)
             }
         }
     }
@@ -341,13 +351,14 @@ class LocationSendScheduler(
         return if (heartbeatArmed || changed) gateOpens - now else null
     }
 
-    private suspend fun sendSequence() {
-        val reason =
-            when {
-                forced -> SendReason.FORCED
-                heartbeatArmed -> SendReason.HEARTBEAT
-                else -> SendReason.LOCATION
-            }
+    private fun currentReason(): SendReason =
+        when {
+            forced -> SendReason.FORCED
+            heartbeatArmed -> SendReason.HEARTBEAT
+            else -> SendReason.LOCATION
+        }
+
+    private suspend fun sendSequence(reason: SendReason) {
         val sessionEpoch = epoch
         val sinceLastSuccess = if (lastSuccess == 0L) null else clock() - lastSuccess
         var lastError: Throwable? = null

@@ -321,6 +321,13 @@ internal class E2eeStore(
         return database.outboxQueries.getOutboxForFriend(friendId).executeAsList().map { it.toMessage() }
     }
 
+    /** Friends a stop is still owed to (see [LocationClient]); survives a restart. */
+    suspend fun listOwedStops(): List<String> = withStoreLock { database.owedStopsQueries.getAll().executeAsList() }
+
+    suspend fun addOwedStop(friendId: String) = withStoreLock { database.owedStopsQueries.insertOwed(friendId) }
+
+    suspend fun removeOwedStop(friendId: String) = withStoreLock { database.owedStopsQueries.deleteOwed(friendId) }
+
     /** Outbox rows whose friend has been removed, oldest first, as (friendId, message) pairs. */
     suspend fun getOrphanedOutbox(): List<Pair<String, EncryptedOutboxMessage>> =
         withStoreLock {

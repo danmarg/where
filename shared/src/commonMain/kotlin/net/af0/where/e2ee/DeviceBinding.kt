@@ -77,6 +77,7 @@ fun reconcileDeviceBinding(
             database.invitesQueries.deleteAll()
             database.consumedInvitesQueries.deleteAll()
             database.outboxQueries.deleteAll()
+            database.owedStopsQueries.deleteAll()
             database.deviceBindingQueries.setMarker(marker)
             names
         }

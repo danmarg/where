@@ -374,6 +374,12 @@ class E2eeManager(
         }
     }
 
+    suspend fun listOwedStops(): List<String> = persistence.listOwedStops()
+
+    suspend fun addOwedStop(friendId: String) = persistence.addOwedStop(friendId)
+
+    suspend fun removeOwedStop(friendId: String) = persistence.removeOwedStop(friendId)
+
     suspend fun getOrphanedOutbox(): List<Pair<String, EncryptedOutboxMessage>> = persistence.getOrphanedOutbox()
 
     suspend fun deleteOutboxByFriendId(friendId: String) = persistence.deleteOutboxByFriendId(friendId)
