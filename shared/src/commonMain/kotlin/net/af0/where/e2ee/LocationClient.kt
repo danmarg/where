@@ -201,7 +201,10 @@ open class LocationClient(
 
     private suspend fun owedRemoveLocked(friendId: String) {
         loadOwedLocked()
-        if (owedStops.remove(friendId)) persistOwed { store.removeOwedStop(friendId) }
+        // If the load failed, memory doesn't know what the row holds: delete it anyway, or a stale
+        // stop would be sent after a restart to a friend we are sharing with. (Once loaded, memory
+        // is authoritative and a delete for an absent id is skipped.)
+        if (owedStops.remove(friendId) || !owedStopsLoaded) persistOwed { store.removeOwedStop(friendId) }
     }
 
     private suspend fun owedContainsLocked(friendId: String): Boolean {
@@ -285,6 +288,9 @@ open class LocationClient(
             SharingTs(seed, seed).also { sharingTsByFriend[friendId] = it }
         }
 
+    // Stands in for the error of a friend pollAll skipped, so its outbox is still flushed.
+    private object PollSkipped : Exception("poll skipped: already in flight")
+
     private val inFlightPolls = mutableSetOf<String>()
     private val inFlightMutex = Mutex()
 
@@ -307,8 +313,12 @@ open class LocationClient(
         sharingEnabled: Boolean = true,
     ): List<UserLocation> =
         coroutineScope {
+            // Friends' outboxes are flushed by pollFriend (after its poll, so what the poll queued
+            // goes out too, and it logs a failure); only the orphans are drained up front.
             try {
-                processOutboxes()
+                processOrphanedOutboxes()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 // Ignore
             }
@@ -346,7 +356,7 @@ open class LocationClient(
                                             false
                                         }
                                     }
-                                if (alreadyPolling) return@async Pair(emptyList<UserLocation>(), null)
+                                if (alreadyPolling) return@async Pair(emptyList<UserLocation>(), PollSkipped)
 
                                 try {
                                     // "Paused" for pollFriend's purposes means "sendLocation isn't
@@ -377,13 +387,20 @@ open class LocationClient(
             val results = deferreds.awaitAll()
             val allUpdates = mutableListOf<UserLocation>()
 
-            for ((updates, _) in results) {
+            val failed = mutableListOf<FriendEntry>()
+            results.forEachIndexed { i, (updates, error) ->
                 allUpdates.addAll(updates)
+                if (error != null) failed.add(friends[i])
             }
 
-            // Ensure outboxes are processed even if some polls failed
+            // pollFriend flushed every friend whose poll ran to the end; one that failed outright or
+            // was skipped (already polling) never got there, so its outbox still goes out, as do
+            // any orphans.
             try {
-                processOutboxes()
+                forEachFriendParallel(failed) { friend -> processOutbox(friend.id) }
+                processOrphanedOutboxes()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 // Ignore
             }
@@ -555,9 +572,11 @@ open class LocationClient(
                         mutexLock.withLock { silentDropRetries.remove("$friendId:$currentToken") }
                     }
 
+                    var acked = false
                     if (idsToAck.isNotEmpty()) {
                         try {
                             service.ackIds(currentToken, idsToAck)
+                            acked = true
                         } catch (e: CancellationException) {
                             throw e
                         } catch (e: Exception) {
@@ -577,6 +596,16 @@ open class LocationClient(
                     )
 
                     totalMessagesProcessed += messages.size
+
+                    // The tail: a short page, all of it processed and acked, and the token didn't
+                    // rotate. The server had nothing more when it answered, so the confirming empty
+                    // GET would only repeat that (anything posted since is the next poll's).
+                    if (result.retiredToken == null && acked && messages.size < MAILBOX_PAGE_LIMIT &&
+                        idsToAck.size == messages.size && result.processedIds.size == messages.size
+                    ) {
+                        stopPolling = true
+                        caughtUp = true
+                    }
 
                     // The receive token rotated (RetireToken): the next iteration polls the new one.
                     if (result.retiredToken != null) {

@@ -42,6 +42,14 @@ internal enum class Label(
 // so an adversary without the current chain key cannot force token advancement.
 internal const val MAX_TOKEN_FOLLOWS_PER_POLL = 5
 
+// The most one GET /inbox/{token} returns (the server's MAX_MESSAGES_PER_POLL). A shorter list means
+// the mailbox had nothing more when it was read, so a batch under this needs no second GET to
+// confirm it. The server's page size is this constant, so the two can't diverge.
+const val MAILBOX_PAGE_LIMIT = 50
+
+// updatePollState skips rewriting a friend whose poll changed nothing but lastPollTs by less than this.
+internal const val POLL_STATE_WRITE_GRANULARITY_SECONDS = 60L
+
 // Total maximum messages to drain in a single poll call to catch up with backlogs.
 internal const val MAX_MESSAGES_PER_POLL = 500
 

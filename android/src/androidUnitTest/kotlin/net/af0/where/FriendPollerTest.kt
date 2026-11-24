@@ -103,7 +103,7 @@ class FriendPollerTest {
     ) = PendingInviteResult(mockk<KeyExchangeInitPayload>(relaxed = true), inviteEk, multiple, error)
 
     @Test
-    fun poll_forwardsFriendUpdatesToUiAndStore() =
+    fun poll_forwardsFriendUpdatesToUiWithoutRewritingStore() =
         runTest {
             val update = UserLocation("f1", 1.0, 2.0, 123L)
             coEvery { client.poll(any(), any(), any()) } returns listOf(update)
@@ -111,7 +111,8 @@ class FriendPollerTest {
             poller.poll()
 
             assertEquals(update, source.friendLocations.value["f1"])
-            coVerify { manager.updateLastLocation("f1", 1.0, 2.0, 123L) }
+            // processBatch already stored it: no second write per update.
+            coVerify(exactly = 0) { manager.updateLastLocation(any(), any(), any(), any()) }
             assertEquals(ConnectionStatus.Ok, source.connectionStatus.value)
         }
 

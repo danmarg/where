@@ -825,14 +825,10 @@ final class LocationSyncService: ObservableObject {
             )
             logger.debug("Got \(updates.count) location updates")
             for update in updates {
-                do {
-                    try await e2eeManager.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: update.timestamp)
-                } catch {
-                    logger.error("Failed to update last location for \(update.userId): \(error.localizedDescription)")
-                }
                 // Location/stationary/stopped state lives on FriendEntry rows (persisted by
-                // E2eeManager.processBatch). The refresh below via listFriends() is the
-                // single source of truth — no parallel store to update here.
+                // E2eeManager.processBatch, which stores each batch's newest Location).
+                // The refresh below via listFriends() is the single source of truth —
+                // no parallel store to update here.
                 onFriendLocationReceived(friendId: update.userId)
             }
 

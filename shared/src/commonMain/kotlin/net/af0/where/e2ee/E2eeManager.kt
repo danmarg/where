@@ -82,7 +82,7 @@ data class FriendEntry(
 
     /**
      * UI hint: silent for nearly the server's retention, so what this friend needs has probably
-     * expired. Judged from a successful empty poll ([isCaughtUp]) after the threshold, not the
+     * expired. Judged from a poll that drained the mailbox ([isCaughtUp]: an empty GET, or a short page fully acked) after the threshold, not the
      * clock, so a returning device doesn't show it before it has looked. Assumes a sane clock.
      */
     val mayNeedRepair: Boolean
@@ -612,9 +612,9 @@ class E2eeManager(
                     lastLng = if (lastLocation != null && (lastLocation.ts >= storedLastTs)) lastLocation.lng else entry.lastLng,
                     lastTs = if (lastLocation != null && (lastLocation.ts >= storedLastTs)) lastLocation.ts else entry.lastTs,
                     lastPollTs = currentTimeSeconds(),
-                    // A non-empty batch means the mailbox may hold more: only a later empty poll
-                    // (see updatePollState) says caught up, so a failed poll can't leave a stale true
-                    // beside this fresh lastPollTs.
+                    // A non-empty batch means the mailbox may hold more: only the poll that ends
+                    // it (an empty GET, or a short page fully acked; see updatePollState) says
+                    // caught up, so a failed poll can't leave a stale true beside this fresh lastPollTs.
                     isCaughtUp = false,
                     stationarySinceTs = newStationarySinceTs,
                     stoppedAtTs = newStoppedAtTs,
@@ -655,14 +655,22 @@ class E2eeManager(
         }
     }
 
-    /** Records a finished poll: both fields in one transaction, so they never disagree. */
+    /**
+     * Records a finished poll: both fields in one transaction, so they never disagree. A poll that
+     * changes nothing but [FriendEntry.lastPollTs] by under [POLL_STATE_WRITE_GRANULARITY_SECONDS]
+     * isn't written (the row is a full rewrite, and polls come every few seconds): its readers
+     * ([FriendEntry.mayNeedRepair], past-retention, the debug "poll:" age) work in days, and a
+     * change of [isCaughtUp] or a clock stepped back is always written.
+     */
     suspend fun updatePollState(
         id: String,
         ts: Long,
         isCaughtUp: Boolean,
     ) {
         persistence.withFriendAndMetadataLock(id) { entry, _ ->
-            if (entry != null) {
+            if (entry != null && entry.isCaughtUp == isCaughtUp && ts - entry.lastPollTs in 0 until POLL_STATE_WRITE_GRANULARITY_SECONDS) {
+                PersistenceAction.None to Unit
+            } else if (entry != null) {
                 PersistenceAction.Update(entry.copy(lastPollTs = ts, isCaughtUp = isCaughtUp)) to Unit
             } else {
                 PersistenceAction.None to Unit

@@ -100,8 +100,8 @@ internal class FriendPoller(
                 for (update in updates) {
                     locationSource.onFriendUpdate(update, updateTime)
                     locationSource.onFriendLocationReceived(update.userId)
-                    // Persistence: use the timestamp from the update payload.
-                    e2eeManager.updateLastLocation(update.userId, update.lat, update.lng, update.timestamp)
+                    // Persisted already: processBatch stores each batch's newest Location, and the
+                    // update is the newest of those (same clamping, same tie rule).
                 }
                 val reportedError = pollPendingInvites()
                 locationSource.onFriendsUpdated(e2eeManager.listFriends())

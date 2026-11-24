@@ -35,6 +35,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import net.af0.where.e2ee.EncryptedMessagePayload
+import net.af0.where.e2ee.MAILBOX_PAGE_LIMIT
 import net.af0.where.e2ee.MAILBOX_RETENTION_SECONDS
 import org.slf4j.LoggerFactory
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
@@ -121,7 +122,7 @@ internal fun messageTtlMs(payload: JsonElement): Long {
 private const val MAX_QUEUE_DEPTH = 10000
 
 /** Maximum messages returned in a single poll request. */
-private const val MAX_MESSAGES_PER_POLL = 50
+private const val MAX_MESSAGES_PER_POLL = MAILBOX_PAGE_LIMIT
 
 /** Maximum POST requests per token within the rate-limit window.
  * Increased 10x to accommodate WAL retry bursts during reconnects (e.g. 20 friends x 50 retries).
