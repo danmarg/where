@@ -226,7 +226,7 @@ class PollCostTest {
         }
 
     @Test
-    fun `a failing cleanup is retried in an hour, not on every poll, and does not abort the poll`() =
+    fun `a failing cleanup is retried in an hour not on every poll and does not abort the poll`() =
         runTest {
             val p = paired()
             val alice = LocationClient("http://localhost", p.aliceManager, p.mailbox)
@@ -261,7 +261,7 @@ class PollCostTest {
         }
 
     @Test
-    fun `a stuck outbox is delivered by the next poll, and a fresh send still goes out at once`() =
+    fun `a stuck outbox is delivered by the next poll and a fresh send still goes out at once`() =
         runTest {
             val p = paired()
             p.mailbox.failPosts = true
@@ -385,7 +385,7 @@ class PollCostTest {
         }
 
     @Test
-    fun `a clock stepped back is written, so repair judgement follows the clock`() =
+    fun `a clock stepped back is written so repair judgement follows the clock`() =
         runTest {
             val p = paired()
             val t = clock.currentTimeSeconds()

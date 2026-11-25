@@ -183,7 +183,7 @@ class SharingOrderTest {
         }
 
     @Test
-    fun `the pin follows the newest Location of a batch, not the last one`() =
+    fun `the pin follows the newest Location of a batch not the last one`() =
         runTest {
             val p = paired()
             clock.advanceSeconds(100)
