@@ -45,7 +45,7 @@ class LocationServiceRestartWorker(
             pollThrottled(app)
             return Result.success()
         }
-        if (!ServicePolicy.shouldNudgeFromWorker(clock(), LocationService.lastPollAtMs.takeIf { it != 0L })) {
+        if (!ServicePolicy.shouldNudgeFromWorker(clock(), app.servicePolledAtMs.takeIf { it != 0L })) {
             Log.i(TAG, "LocationService polled within its cadence; skipping heartbeat tick")
             return Result.success()
         }

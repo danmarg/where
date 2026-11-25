@@ -835,8 +835,9 @@ class LocationService : Service() {
         isRegistered = false
         pendingFriendSends.close()
         cancelDozeAlarm()
-        lastPollAtMs = 0L
         serviceScope.cancel()
+        // After the cancel, so a poll finishing as the service dies can't re-stamp it.
+        (application as? WhereApplication)?.servicePolledAtMs = 0L
         // pollLoop() is the only other place this is released; if the Service is torn down
         // while a wake is in flight (or after pollLoop has already died — see the
         // pollLoopJob recovery logic in onStartCommand), nothing else would ever release it,
@@ -1083,7 +1084,7 @@ class LocationService : Service() {
             // sessions moving (in the background with sharing off, the worker does this).
             doPoll(source)
             lastPollAtElapsedMs = elapsedClock()
-            lastPollAtMs = clock()
+            (application as? WhereApplication)?.servicePolledAtMs = clock()
             // Heartbeat: ensure we send at least once every 5 minutes when stationary.
             // Runs regardless of foreground state so background location stays alive. Only when
             // due: this loop also wakes on location callbacks and the 10 s / 2 s timers, and
@@ -1559,14 +1560,6 @@ class LocationService : Service() {
 
         /** How often a failed passive registration is retried. */
         const val PASSIVE_RETRY_INTERVAL_MS = 60_000L
-
-        /**
-         * [clock] time of the service's last poll, 0 when it isn't running: the WorkManager
-         * heartbeat skips its tick while the service has polled within its cadence (E8).
-         */
-        @Volatile
-        var lastPollAtMs: Long = 0L
-            internal set
 
         /** Overridable in tests. Mutable global (M14): moving it behind an injected clock is a wider redesign. */
         var clock: () -> Long = { System.currentTimeMillis() }

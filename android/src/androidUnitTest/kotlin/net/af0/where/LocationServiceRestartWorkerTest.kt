@@ -89,17 +89,17 @@ class LocationServiceRestartWorkerTest {
             shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
             addPendingInvite()
             val now = 5_000_000_000L
-            LocationService.lastPollAtMs = now - 60_000
+            app.servicePolledAtMs = now - 60_000
             try {
                 val w = worker().also { it.clock = { now } }
                 assertEquals(ListenableWorker.Result.success(), w.doWork())
                 assertNull(shadowOf(app).nextStartedService, "polled a minute ago; no tick")
 
-                LocationService.lastPollAtMs = now - PollPolicy.BACKGROUND_INTERVAL_MS
+                app.servicePolledAtMs = now - PollPolicy.BACKGROUND_INTERVAL_MS
                 w.doWork()
                 assertNotNull(shadowOf(app).nextStartedService, "a poll a cadence ago is due a tick")
             } finally {
-                LocationService.lastPollAtMs = 0L
+                app.servicePolledAtMs = 0L
             }
         }
 
