@@ -40,7 +40,10 @@ This is `android fastlane deploy`. It:
 - Prompts for the keystore password, then uploads to Play's **internal** track.
 
 `deploy` leaves the version-bump commit local. Don't push it by hand: step 3 pushes `main`
-for you once its checks pass. Review any other unpushed commits first, since they go out too.
+for you once its checks pass. Review any other unpushed commits first, since they go out too, and
+make them land before the bump: the next step needs the bump commit to be HEAD, so don't commit
+anything on top of it (if you did, move it ahead of the bump, or push it separately and re-run
+`deploy`).
 
 Once you've tested the internal build, promote it through Play's tracks:
 

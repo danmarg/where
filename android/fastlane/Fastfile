@@ -121,12 +121,14 @@ platform :android do
     end
 
     # HEAD must be deploy's version-bump commit, so the tag lands on the commit Play got, not on
-    # unrelated later work. FORCE_RETAG=1 skips this (e.g. repairing at an older commit).
+    # unrelated later work (the APKs are built from HEAD, so the tag must be HEAD). FORCE_RETAG=1
+    # skips this (e.g. repairing at an older commit).
     subject = `git log -1 --format=%s HEAD`.strip
     unless force || subject.start_with?("Bump Android version to #{version_name} ")
       UI.user_error!(
         "HEAD (#{head[0, 8]}, \"#{subject}\") isn't the version-bump commit for #{version_name}. " \
-        "Check out the bump commit, or set FORCE_RETAG=1 to tag HEAD anyway.",
+        "The tag must point at the commit that was built, so put later commits before the bump (or " \
+        "check out the bump commit), or set FORCE_RETAG=1 to tag HEAD anyway.",
       )
     end
 
