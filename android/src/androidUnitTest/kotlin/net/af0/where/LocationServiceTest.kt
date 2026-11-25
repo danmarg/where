@@ -668,6 +668,42 @@ class LocationServiceTest {
             assertTrue(shadowOf(controller.get()).isStoppedBySelf)
         }
 
+    /**
+     * The app leaves the screen while the loop is mid-iteration (here from inside the poll, as a
+     * location callback or poll wake on another thread would see it): the loop reads the foreground
+     * as false and decides before the collector has queued the Visibility event. No grace is
+     * recorded yet, which must start it, not read as "over" and stop the service at once.
+     */
+    @Test
+    fun notSharing_leavingScreenMidIteration_startsTheGrace_doesNotStopAtOnce() =
+        runTest {
+            var now = 1_000_000L
+            LocationService.elapsedClock = { now }
+            (context as TestWhereApplication).userStore.setSharing(false)
+            fakeLocationSource.setAppForeground(true)
+            val (controller, mockClient) = buildServiceWithFriend()
+            controller.create()
+            advanceUntilIdle()
+
+            io.mockk.coEvery { mockClient.poll(any(), any(), any()) } answers {
+                fakeLocationSource.setAppForeground(false)
+                emptyList()
+            }
+            fakeLocationSource.wakePoll()
+            advanceUntilIdle()
+            assertFalse(shadowOf(controller.get()).isStoppedBySelf, "just left the screen: within the grace")
+
+            now += LocationService.BACKGROUND_STOP_GRACE_MS - 1
+            fakeLocationSource.wakePoll()
+            advanceUntilIdle()
+            assertFalse(shadowOf(controller.get()).isStoppedBySelf, "still within the grace")
+
+            now += 1
+            fakeLocationSource.wakePoll()
+            advanceUntilIdle()
+            assertTrue(shadowOf(controller.get()).isStoppedBySelf)
+        }
+
     @Test
     fun returningToForeground_pollsAtOnceInsteadOfAfterTheBackgroundSleep() =
         runTest {

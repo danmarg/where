@@ -49,7 +49,7 @@ internal object ServicePolicy {
         val canRunService: Boolean,
         /** [PollPolicy.isRapid] for the same instant. */
         val rapid: Boolean,
-        /** When the app last left the screen (incl. a visit too short to see); null: never, so over. */
+        /** When the app last left the screen (incl. a visit too short to see); null: no grace running (the app is visible). See [graceStart], which starts one the first time a background read finds none. */
         val graceStartedAtMs: Long? = null,
         /** Reconnect syncs in flight. */
         val runningSyncs: Int = 0,
@@ -99,6 +99,20 @@ internal object ServicePolicy {
     ): Boolean =
         state.syncWaitGaveUp && state.runningSyncs > 0 &&
             (decision as? Decision.Run)?.reason == RunReason.SYNC_WAIT_GAVE_UP
+
+    /**
+     * The grace start to carry into [decide], given what pollLoop has recorded from queued
+     * Visibility events and the foreground it reads directly. The two can disagree for a moment (a
+     * wake queued ahead of the event): backgrounded with nothing recorded then means it just
+     * happened, so the grace starts now rather than reading as over. Visible clears it, so a
+     * stale start from an earlier visit can't end a later grace early. Order-independent: the
+     * events only ever move the start earlier than [nowMs], never decide whether there is one.
+     */
+    fun graceStart(
+        appForeground: Boolean,
+        recorded: Long?,
+        nowMs: Long,
+    ): Long? = if (appForeground) null else recorded ?: nowMs
 
     fun decide(
         state: State,

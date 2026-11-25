@@ -183,8 +183,9 @@ class LocationService : Service() {
     // The poll loop's last view of the foreground, to spot the app leaving it.
     private var wasInForeground = false
 
-    // Owned by pollLoop alone (onCreate's collectors only queue [ServiceEvent]s): [elapsedClock]
-    // time the app last left the screen, null if it never did. Starts the idle stop's grace.
+    // Written by pollLoop alone, plus once in onCreate before pollLoop launches (onCreate's
+    // collectors only queue [ServiceEvent]s): [elapsedClock] time the app last left the screen,
+    // null while it is visible. Starts the idle stop's grace; see [ServicePolicy.graceStart].
     private var graceStartedAtMs: Long? = null
 
     // What the collectors tell pollLoop; it applies them (see applyEvent) and decides again.
@@ -456,6 +457,8 @@ class LocationService : Service() {
         // Taken now, not when the collectors below first run (serviceScope isn't immediate): an
         // edge in between is a real one.
         val initialForeground = locationSource.isAppInForeground.value
+        // Started in the background (worker, boot): no grace, it was never on screen.
+        if (!initialForeground) graceStartedAtMs = elapsedClock() - ServicePolicy.BACKGROUND_STOP_GRACE_MS
         val initialEntries = locationSource.foregroundEntries.value
         // Leaving the foreground (or a visit too short for the loop to see, which still bumps
         // foregroundEntries) starts the idle stop's grace; pollLoop applies it, arms the alarm for
@@ -912,10 +915,14 @@ class LocationService : Service() {
         while (true) applyEvent(events.tryReceive().getOrNull() ?: break)
     }
 
-    private suspend fun policyState(rapid: Boolean) =
-        ServicePolicy.State(
+    private suspend fun policyState(rapid: Boolean): ServicePolicy.State {
+        val foreground = locationSource.isAppInForeground.value
+        // The foreground is read here, the grace start from queued events: they can disagree (a
+        // wake ahead of the Visibility event), so the policy resolves it (see graceStart).
+        graceStartedAtMs = ServicePolicy.graceStart(foreground, graceStartedAtMs, elapsedClock())
+        return ServicePolicy.State(
             hasRelationships = locationSource.friends.value.isNotEmpty() || locationSource.allPendingInvites.value.isNotEmpty(),
-            appForeground = locationSource.isAppInForeground.value,
+            appForeground = foreground,
             sharing = userStore.isSharingLocation.value,
             canRunService = canRunLocationService(),
             rapid = rapid,
@@ -923,6 +930,7 @@ class LocationService : Service() {
             runningSyncs = syncGate.running,
             syncWaitGaveUp = syncWaitGaveUp,
         )
+    }
 
     private suspend fun decideNow(): ServicePolicy.Decision {
         drainEvents()

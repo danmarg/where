@@ -200,4 +200,18 @@ class ServicePolicyTest {
         assertEquals(true, ServicePolicy.shouldNudgeFromWorker(now, now - cadence))
         assertEquals(true, ServicePolicy.shouldNudgeFromWorker(now, now + 1_000))
     }
+
+    @Test
+    fun `graceStart resolves the foreground against the recorded start`() {
+        assertEquals(null, ServicePolicy.graceStart(true, null, now), "visible: no grace")
+        assertEquals(null, ServicePolicy.graceStart(true, now - 5, now), "visible clears a stale start")
+        assertEquals(now, ServicePolicy.graceStart(false, null, now), "backgrounded, event not seen yet: starts now")
+        assertEquals(now - 5, ServicePolicy.graceStart(false, now - 5, now), "recorded start kept")
+        val started = ServicePolicy.graceStart(false, null, now)
+        assertEquals(
+            Decision.Stop(StopReason.NOT_SHARING),
+            ServicePolicy.decide(st(graceAt = started), now + grace),
+        )
+        assertEquals(RunReason.GRACE, (ServicePolicy.decide(st(graceAt = started), now + grace - 1) as Decision.Run).reason)
+    }
 }
