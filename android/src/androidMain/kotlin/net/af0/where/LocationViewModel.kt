@@ -139,6 +139,27 @@ class LocationViewModel(
     private val _isExchanging = MutableStateFlow(false)
     val isExchanging: StateFlow<Boolean> = _isExchanging
 
+    // Exchanges in flight (confirmQrScan, confirmPendingInit); _isExchanging (the spinner) is true while any runs.
+    private var exchangesInFlight = 0
+
+    // Invites whose confirmQrScan is running: blocks a double tap of the same invite only.
+    private val confirmingInvites: MutableSet<QrPayload> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    private fun beginExchange() {
+        synchronized(this) {
+            exchangesInFlight++
+            _isExchanging.value = true
+        }
+    }
+
+    private fun endExchange() {
+        synchronized(this) {
+            if (exchangesInFlight == 0) Log.w(TAG, "endExchange: no exchange in flight")
+            exchangesInFlight = maxOf(0, exchangesInFlight - 1)
+            _isExchanging.value = exchangesInFlight > 0
+        }
+    }
+
     val connectionStatus: StateFlow<ConnectionStatus> = locationSource.connectionStatus
     val diagnosticLog: StateFlow<List<String>> = e2eeManager.diagnosticLog
 
@@ -494,9 +515,11 @@ class LocationViewModel(
         qr: QrPayload,
         friendName: String,
     ) {
-        // A second confirm while the first exchange runs (a double tap) is ignored before it can
-        // touch UI state; the first keeps the spinner.
-        if (!_isExchanging.compareAndSet(false, true)) return
+        // A second confirm of the same invite while the first runs (a double tap) is ignored before
+        // it can touch UI state; the first keeps the spinner. Other exchanges don't block this one.
+        // It may run alongside confirmPendingInit: both go through E2eeManager's persistence locks
+        // (withMetadataLock / withFriendAndMetadataLock), which serialize their writes.
+        if (confirmingInvites.contains(qr)) return
         Log.d(TAG, "confirmQrScan: friendName=$friendName")
         uiStateStore.onPendingQrForNaming(null)
         locationSource.confirmQrScan()
@@ -507,6 +530,8 @@ class LocationViewModel(
         uiStateStore.setInviteSheetShowing(false)
 
         val qrWithName = qr.copy(suggestedName = friendName)
+        if (!confirmingInvites.add(qr)) return
+        beginExchange()
         viewModelScope.launch {
             try {
                 val (initPayload, bobEntry) = e2eeManager.processScannedQr(qrWithName, displayName.value)
@@ -534,19 +559,18 @@ class LocationViewModel(
                 } catch (e: Exception) {
                     Log.e(TAG, "confirmQrScan inner failure: ${e.message}")
                     updateStatus(e)
-                } finally {
-                    _isExchanging.value = false
                 }
             } catch (e: InviteAlreadyAcceptedException) {
                 // Already paired from this invite (a duplicate confirm, or a friend since removed).
                 Log.w(TAG, "confirmQrScan: invite already accepted")
                 showInviteError(MR.strings.invite_already_used)
-                _isExchanging.value = false
             } catch (e: Exception) {
                 Log.e(TAG, "confirmQrScan: processScannedQr failed", e)
                 // No pairing was created (the consumed record commits with it), so the invite may be tried again.
                 if (e is InviteExpiredException) showInviteError(MR.strings.invite_expired) else updateStatus(e)
-                _isExchanging.value = false
+            } finally {
+                confirmingInvites.remove(qr)
+                endExchange()
             }
         }
     }
@@ -561,7 +585,7 @@ class LocationViewModel(
         _inviteState.value = InviteState.None
         uiStateStore.setInviteSheetShowing(false)
 
-        _isExchanging.value = true
+        beginExchange()
         viewModelScope.launch {
             try {
                 val entry = e2eeManager.processKeyExchangeInit(payload, name, aliceEkPub)
@@ -579,16 +603,14 @@ class LocationViewModel(
                     } catch (e: Exception) {
                         Log.e(TAG, "confirmPendingInit: inner failure: ${e.message}")
                         updateStatus(e)
-                    } finally {
-                        _isExchanging.value = false
                     }
                 } else {
                     Log.e(TAG, "confirmPendingInit: processKeyExchangeInit returned null")
-                    _isExchanging.value = false
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "confirmPendingInit: processKeyExchangeInit failed", e)
-                _isExchanging.value = false
+            } finally {
+                endExchange()
             }
         }
     }

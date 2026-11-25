@@ -11,9 +11,12 @@ import app.cash.sqldelight.driver.android.AndroidSqliteDriver
 import dev.icerock.moko.resources.desc.Raw
 import dev.icerock.moko.resources.desc.Resource
 import dev.icerock.moko.resources.desc.StringDesc
+import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.Channel
@@ -258,8 +261,8 @@ class LocationViewModelTest {
 
         // Mock objects that make network calls
         io.mockk.mockkObject(KtorMailboxClient)
-        io.mockk.coEvery { KtorMailboxClient.poll(any(), any()) } returns emptyList()
-        io.mockk.coEvery { KtorMailboxClient.post(any(), any(), any()) } returns Unit
+        coEvery { KtorMailboxClient.poll(any(), any()) } returns emptyList()
+        coEvery { KtorMailboxClient.post(any(), any(), any()) } returns Unit
     }
 
     @After
@@ -384,7 +387,7 @@ class LocationViewModelTest {
             vm.confirmPendingInit("Bob (Friend)")
             advanceUntilIdle()
 
-            io.mockk.coVerify { store.processKeyExchangeInit(initPayload, "Bob (Friend)", any()) }
+            coVerify { store.processKeyExchangeInit(initPayload, "Bob (Friend)", any()) }
             assertNull(vm.pendingInitPayload.value)
         }
 
@@ -469,7 +472,7 @@ class LocationViewModelTest {
             vm.cancelPendingInit()
             advanceUntilIdle()
 
-            io.mockk.coVerify { store.clearInvite(any<InvitePublicKey>()) }
+            coVerify { store.clearInvite(any<InvitePublicKey>()) }
             assertNull(vm.pendingInitPayload.value)
         }
 
@@ -506,7 +509,7 @@ class LocationViewModelTest {
             every { mockSession.sendToken } returns SendToken(ByteArray(16) { 1 })
             every { mockSession.recvToken } returns RecvToken(ByteArray(16) { 4 })
             every { mockFriend.id } returns "alice_fp"
-            io.mockk.coEvery { store.processScannedQr(any(), any()) } returns (mockPayload to mockFriend)
+            coEvery { store.processScannedQr(any(), any()) } returns (mockPayload to mockFriend)
 
             uiStore.onPendingQrForNaming(qr)
             (vm.inviteState as MutableStateFlow).value = InviteState.Pending(qr)
@@ -515,8 +518,8 @@ class LocationViewModelTest {
             vm.confirmQrScan(qr, "Alice (My Friend)")
             advanceUntilIdle()
 
-            io.mockk.coVerify(timeout = 5000) { store.processScannedQr(any(), any()) }
-            io.mockk.coVerify(timeout = 5000) { client.postKeyExchangeInit(any(), any(), any()) }
+            coVerify(timeout = 5000) { store.processScannedQr(any(), any()) }
+            coVerify(timeout = 5000) { client.postKeyExchangeInit(any(), any(), any()) }
         }
 
     @Test
@@ -551,7 +554,7 @@ class LocationViewModelTest {
             advanceUntilIdle()
 
             assertNull(vm.pendingQrForNaming.value)
-            io.mockk.coVerify(exactly = 0) { store.processScannedQr(any(), any()) }
+            coVerify(exactly = 0) { store.processScannedQr(any(), any()) }
         }
 
     // Regression test for the pause-desync bug: when sharing is toggled off and the app
@@ -629,7 +632,7 @@ class LocationViewModelTest {
             every { mockSession.sendToken } returns SendToken(ByteArray(16) { 1 })
             every { mockSession.recvToken } returns RecvToken(ByteArray(16) { 4 })
             every { mockFriend.id } returns "friend1"
-            io.mockk.coEvery { store.processScannedQr(any(), any()) } returns (mockPayload to mockFriend)
+            coEvery { store.processScannedQr(any(), any()) } returns (mockPayload to mockFriend)
 
             (vm.inviteState as MutableStateFlow).value = InviteState.Pending(qr)
             vm.confirmQrScan(qr, "Alice")
@@ -639,7 +642,7 @@ class LocationViewModelTest {
             assertTrue(source.lastRapidPollTrigger.value > 0L)
 
             // 2. Should attempt a pollAll immediately after pairing
-            io.mockk.coVerify(timeout = 5000) { client.postKeyExchangeInit(any(), any(), any()) }
+            coVerify(timeout = 5000) { client.postKeyExchangeInit(any(), any(), any()) }
         }
 
     @Test
@@ -731,9 +734,9 @@ class LocationViewModelTest {
 
             val mockFriend = mockk<FriendEntry>(relaxed = true)
             every { mockFriend.id } returns "friend-alice-123"
-            io.mockk.coEvery { store.processKeyExchangeInit(any(), any(), any()) } returns mockFriend
-            io.mockk.coEvery { store.listFriends() } returns listOf(mockFriend)
-            io.mockk.coEvery { store.listPendingInvites() } returns emptyList()
+            coEvery { store.processKeyExchangeInit(any(), any(), any()) } returns mockFriend
+            coEvery { store.listFriends() } returns listOf(mockFriend)
+            coEvery { store.listPendingInvites() } returns emptyList()
 
             val initPayload =
                 KeyExchangeInitPayload(
@@ -788,12 +791,12 @@ class LocationViewModelTest {
             // Pause Bob: should enqueue one StoppedSharing for him.
             vm.togglePauseFriend("bob")
             advanceUntilIdle()
-            io.mockk.coVerify(exactly = 1) { mockClient.sendStoppedSharingToFriend("bob") }
+            coVerify(exactly = 1) { mockClient.sendStoppedSharingToFriend("bob") }
 
             // Un-pause Bob: must NOT enqueue. Still exactly 1 from the pause above.
             vm.togglePauseFriend("bob")
             advanceUntilIdle()
-            io.mockk.coVerify(exactly = 1) { mockClient.sendStoppedSharingToFriend("bob") }
+            coVerify(exactly = 1) { mockClient.sendStoppedSharingToFriend("bob") }
         }
 
     /**
@@ -821,10 +824,10 @@ class LocationViewModelTest {
             viewModel!!.removeFriend("bob")
             advanceUntilIdle()
 
-            io.mockk.coVerify(exactly = 1) {
+            coVerify(exactly = 1) {
                 mockClient.removeFriend("bob", pausedFriendIds = setOf("carol"), sharingEnabled = true)
             }
-            io.mockk.coVerify(exactly = 1) { mockClient.processOrphanedOutboxes() }
+            coVerify(exactly = 1) { mockClient.processOrphanedOutboxes() }
         }
 
     /** Without location permission we're receive-only: removal must not claim we stopped sharing. */
@@ -848,7 +851,7 @@ class LocationViewModelTest {
             viewModel!!.removeFriend("bob")
             advanceUntilIdle()
 
-            io.mockk.coVerify(exactly = 1) { mockClient.removeFriend("bob", pausedFriendIds = any(), sharingEnabled = false) }
+            coVerify(exactly = 1) { mockClient.removeFriend("bob", pausedFriendIds = any(), sharingEnabled = false) }
         }
 
     /**
@@ -884,7 +887,7 @@ class LocationViewModelTest {
             // The watcher should have run fireFriendExpiry, clearing the timer and pausing.
             assertFalse(friendId in userStore.friendExpiresAt.value, "elapsed timer must be cleared")
             assertTrue(friendId in userStore.pausedFriendIds.value, "expired friend must be paused")
-            io.mockk.coVerify(exactly = 1) { mockClient.sendStoppedSharingToFriend(friendId) }
+            coVerify(exactly = 1) { mockClient.sendStoppedSharingToFriend(friendId) }
         }
 
     /**
@@ -968,8 +971,8 @@ class LocationViewModelTest {
 
     private fun mockPollingClient(): LocationClient =
         mockk<LocationClient>(relaxed = true).also {
-            io.mockk.coEvery { it.poll(any(), any(), any()) } returns emptyList()
-            io.mockk.coEvery { it.pollPendingInvites() } returns emptyList()
+            coEvery { it.poll(any(), any(), any()) } returns emptyList()
+            coEvery { it.pollPendingInvites() } returns emptyList()
         }
 
     @Test
@@ -983,7 +986,7 @@ class LocationViewModelTest {
             source.setAppForeground(true)
             advanceUntilIdle()
 
-            io.mockk.coVerify(atLeast = 1) { client.poll(any(), any(), any()) }
+            coVerify(atLeast = 1) { client.poll(any(), any(), any()) }
         }
 
     @Test
@@ -999,7 +1002,7 @@ class LocationViewModelTest {
             source.wakePoll()
             advanceUntilIdle()
 
-            io.mockk.coVerify(atLeast = 2) { client.poll(any(), any(), any()) }
+            coVerify(atLeast = 2) { client.poll(any(), any(), any()) }
         }
 
     @Test
@@ -1014,7 +1017,7 @@ class LocationViewModelTest {
             source.setAppForeground(true)
             advanceUntilIdle()
 
-            io.mockk.coVerify(exactly = 0) { client.poll(any(), any(), any()) }
+            coVerify(exactly = 0) { client.poll(any(), any(), any()) }
         }
 
     @Test
@@ -1034,7 +1037,7 @@ class LocationViewModelTest {
             source.wakePoll()
             advanceUntilIdle()
 
-            io.mockk.coVerify(exactly = 0) { client.poll(any(), any(), any()) }
+            coVerify(exactly = 0) { client.poll(any(), any(), any()) }
         }
 
     @Test
@@ -1046,7 +1049,7 @@ class LocationViewModelTest {
             viewModel = foregroundPollVm(source, client)
             advanceUntilIdle()
 
-            io.mockk.coVerify(exactly = 0) { client.poll(any(), any(), any()) }
+            coVerify(exactly = 0) { client.poll(any(), any(), any()) }
         }
 
     @Test
@@ -1067,7 +1070,7 @@ class LocationViewModelTest {
             source.wakePoll()
             advanceUntilIdle()
 
-            io.mockk.coVerify(exactly = 0) { client.poll(any(), any(), any()) }
+            coVerify(exactly = 0) { client.poll(any(), any(), any()) }
         }
 
     @Test
@@ -1081,7 +1084,7 @@ class LocationViewModelTest {
             source.setAppForeground(true)
             advanceUntilIdle()
 
-            io.mockk.coVerify(exactly = 0) { client.poll(any(), any(), any()) }
+            coVerify(exactly = 0) { client.poll(any(), any(), any()) }
         }
 
     @Test
@@ -1095,7 +1098,7 @@ class LocationViewModelTest {
             source.setAppForeground(true)
             advanceUntilIdle()
 
-            io.mockk.coVerify(exactly = 0) { client.poll(any(), any(), any()) }
+            coVerify(exactly = 0) { client.poll(any(), any(), any()) }
         }
 
     @Test
@@ -1239,6 +1242,96 @@ class LocationViewModelTest {
             assertFalse(vm.isExchanging.value, "isExchanging must be cleared after failure")
         }
 
+    private fun exchangeQr() =
+        QrPayload(
+            protocolVersion = PROTOCOL_VERSION,
+            ekPub = InvitePublicKey(ByteArray(32) { 1 }),
+            suggestedName = "Alice",
+            discoverySecret = DiscoverySecret(ByteArray(32)),
+        )
+
+    private fun relaxedFriend(): FriendEntry {
+        val friend = mockk<FriendEntry>(relaxed = true)
+        every { friend.id } returns "friend1"
+        return friend
+    }
+
+    @Test
+    fun confirmQrScan_otherExchangeInFlight_stillProceeds() =
+        runTest {
+            val store = mockk<E2eeManager>(relaxed = true)
+            val client = mockk<LocationClient>(relaxed = true)
+            val source = TestFakeLocationSource()
+            val vm =
+                LocationViewModel(
+                    app,
+                    e2eeManagerParam = store,
+                    locationClientParam = client,
+                    locationSourceParam = source,
+                    uiStateStoreParam = FakeUiStateStore(),
+                )
+            val gate = CompletableDeferred<FriendEntry?>()
+            coEvery { store.processKeyExchangeInit(any(), any(), any()) } coAnswers { gate.await() }
+            coEvery { store.processScannedQr(any(), any()) } returns
+                (mockk<KeyExchangeInitPayload>(relaxed = true) to relaxedFriend())
+
+            source.onPendingInit(
+                KeyExchangeInitPayload(
+                    v = PROTOCOL_VERSION,
+                    ekPub = byteArrayOf(1, 2, 3),
+                    keyConfirmation = byteArrayOf(4, 5, 6),
+                    suggestedName = "Bob",
+                ),
+                aliceEkPub = InvitePublicKey(ByteArray(32)),
+            )
+            advanceUntilIdle()
+            vm.confirmPendingInit("Bob")
+            advanceUntilIdle()
+            assertTrue(vm.isExchanging.value, "the pending-init exchange is in flight")
+
+            val qr = exchangeQr()
+            vm.processQrUrl(qr.toUrl())
+            advanceUntilIdle()
+            vm.confirmQrScan(qr, "Alice")
+            advanceUntilIdle()
+
+            coVerify(exactly = 1) { store.processScannedQr(any(), any()) }
+            assertNull(vm.pendingQrForNaming.value, "the naming dialog closes")
+            assertTrue(vm.isExchanging.value, "the spinner stays up while the first exchange runs")
+
+            gate.complete(null)
+            advanceUntilIdle()
+            assertFalse(vm.isExchanging.value, "the spinner clears once every exchange is done")
+        }
+
+    @Test
+    fun confirmQrScan_doubleConfirm_runsOnce() =
+        runTest {
+            val store = mockk<E2eeManager>(relaxed = true)
+            val source = TestFakeLocationSource()
+            val vm =
+                LocationViewModel(
+                    app,
+                    e2eeManagerParam = store,
+                    locationClientParam = mockk<LocationClient>(relaxed = true),
+                    locationSourceParam = source,
+                    uiStateStoreParam = FakeUiStateStore(),
+                )
+            val gate = CompletableDeferred<Pair<KeyExchangeInitPayload, FriendEntry>>()
+            coEvery { store.processScannedQr(any(), any()) } coAnswers { gate.await() }
+
+            val qr = exchangeQr()
+            vm.confirmQrScan(qr, "Alice")
+            vm.confirmQrScan(qr, "Alice")
+            advanceUntilIdle()
+            coVerify(exactly = 1) { store.processScannedQr(any(), any()) }
+            assertTrue(vm.isExchanging.value)
+
+            gate.complete(mockk<KeyExchangeInitPayload>(relaxed = true) to relaxedFriend())
+            advanceUntilIdle()
+            assertFalse(vm.isExchanging.value)
+        }
+
     private fun sharingVm(
         source: TestFakeLocationSource,
         client: LocationClient,
@@ -1306,13 +1399,13 @@ class LocationViewModelTest {
 
             source.setAppForeground(true)
             advanceUntilIdle()
-            io.mockk.coVerify(exactly = 1) { client.sendStoppedSharing(any()) }
+            coVerify(exactly = 1) { client.sendStoppedSharing(any()) }
 
             source.setAppForeground(false)
             advanceUntilIdle()
             source.setAppForeground(true)
             advanceUntilIdle()
-            io.mockk.coVerify(exactly = 1) { client.sendStoppedSharing(any()) }
+            coVerify(exactly = 1) { client.sendStoppedSharing(any()) }
         }
 
     @Test
@@ -1326,7 +1419,7 @@ class LocationViewModelTest {
             source.setAppForeground(true)
             advanceUntilIdle()
 
-            io.mockk.coVerify(exactly = 0) { client.sendStoppedSharing(any()) }
+            coVerify(exactly = 0) { client.sendStoppedSharing(any()) }
         }
 
     @Test
@@ -1360,7 +1453,7 @@ class LocationViewModelTest {
             advanceUntilIdle()
             source.setAppForeground(true)
             advanceUntilIdle()
-            io.mockk.coVerify(exactly = 2) { client.sendStoppedSharing(any()) }
+            coVerify(exactly = 2) { client.sendStoppedSharing(any()) }
         }
 
     @Test
@@ -1368,7 +1461,7 @@ class LocationViewModelTest {
         runTest {
             val source = TestFakeLocationSource()
             val client = mockPollingClient()
-            io.mockk.coEvery { client.sendStoppedSharing(any()) } throws RuntimeException("offline") andThen Unit
+            coEvery { client.sendStoppedSharing(any()) } throws RuntimeException("offline") andThen Unit
             val (vm, userStore) = sharingVm(source, client)
             viewModel = vm
             userStore.setSharing(true)
@@ -1385,7 +1478,7 @@ class LocationViewModelTest {
             source.setAppForeground(true)
             advanceUntilIdle()
 
-            io.mockk.coVerify(exactly = 2) { client.sendStoppedSharing(any()) }
+            coVerify(exactly = 2) { client.sendStoppedSharing(any()) }
         }
 
     @Test
@@ -1398,7 +1491,7 @@ class LocationViewModelTest {
             userStore.setSharing(true)
             source.setAppForeground(true)
             advanceUntilIdle()
-            io.mockk.coVerify(exactly = 1) { client.sendStoppedSharing(any()) }
+            coVerify(exactly = 1) { client.sendStoppedSharing(any()) }
             while (shadowOf(app).nextStartedService != null) { /* drain */ }
 
             // Granted through the in-app flow: the app never leaves the foreground.
