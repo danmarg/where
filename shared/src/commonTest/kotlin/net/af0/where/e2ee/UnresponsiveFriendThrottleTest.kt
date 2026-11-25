@@ -86,7 +86,7 @@ class UnresponsiveFriendThrottleTest {
             val (aliceClient, bobClient) = pairedClients(mailbox)
 
             bobClient.sendLocation(0.0, 0.0, emptySet())
-            aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            aliceClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
 
             advanceTimeBy(400_000L) // t=400s: unresponsive, throttled send is due.
             mailbox.failNextPost = true
@@ -97,7 +97,7 @@ class UnresponsiveFriendThrottleTest {
                 aliceClient.sendLocation(1.0, 1.0, emptySet())
             }
             assertTrue(
-                bobClient.poll(isForeground = true, pausedFriendIds = emptySet()).isEmpty(),
+                bobClient.pollAll(isForeground = true, pausedFriendIds = emptySet()).isEmpty(),
                 "the failed attempt must not have been delivered",
             )
 
@@ -107,7 +107,7 @@ class UnresponsiveFriendThrottleTest {
             // outbox clears (same WAL-safety fall-through as #344's retry test) - both must land.
             advanceTimeBy(5_000L)
             aliceClient.sendLocation(2.0, 2.0, emptySet())
-            val delivered = bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            val delivered = bobClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
             assertEquals(2, delivered.size, "the originally stuck message must retry promptly, not wait out the throttle window")
             assertEquals(1.0, delivered[0].lat, "the originally stuck message must be delivered first, in order")
             assertEquals(2.0, delivered[1].lat)
@@ -137,23 +137,23 @@ class UnresponsiveFriendThrottleTest {
             // since her lastSentTs to both stays well under the throttle interval throughout.
             bobClient.sendLocation(0.0, 0.0, emptySet())
             charlieClient.sendLocation(0.0, 0.0, emptySet())
-            aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            aliceClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
 
             advanceTimeBy(350_000L)
             aliceClient.sendLocation(1.0, 1.0, emptySet()) // both unresponsive-but-due - fans out to both.
-            bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
-            charlieClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            bobClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
+            charlieClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
 
             advanceTimeBy(50_000L) // t=400s: only 50s since Bob's last send - well under the throttle interval.
             charlieClient.sendLocation(0.0, 0.0, emptySet())
-            aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            aliceClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
 
             aliceClient.sendLocation(2.0, 2.0, emptySet()) // fans out to both in one call.
             assertTrue(
-                bobClient.poll(isForeground = true, pausedFriendIds = emptySet()).isEmpty(),
+                bobClient.pollAll(isForeground = true, pausedFriendIds = emptySet()).isEmpty(),
                 "Bob is unresponsive and not yet due - must be throttled",
             )
-            val toCharlie = charlieClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            val toCharlie = charlieClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
             assertEquals(1, toCharlie.size, "Charlie is responsive - one unresponsive friend must not affect sends to another")
         }
 
@@ -166,12 +166,12 @@ class UnresponsiveFriendThrottleTest {
 
             // Establishes Alice's lastRecvTs for Bob at t=0.
             bobClient.sendLocation(0.0, 0.0, emptySet())
-            aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            aliceClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
 
             advanceTimeBy(250_000L) // 250s: under the 300s threshold.
             aliceClient.sendLocation(1.0, 1.0, emptySet())
 
-            val received = bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            val received = bobClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
             assertEquals(1, received.size, "still within the responsiveness window, must send normally")
         }
 
@@ -183,22 +183,22 @@ class UnresponsiveFriendThrottleTest {
             val (aliceClient, bobClient) = pairedClients(mailbox)
 
             bobClient.sendLocation(0.0, 0.0, emptySet())
-            aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            aliceClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
 
             advanceTimeBy(250_000L) // t=250s: still responsive, this send also sets lastSentTs=250.
             aliceClient.sendLocation(1.0, 1.0, emptySet())
-            assertEquals(1, bobClient.poll(isForeground = true, pausedFriendIds = emptySet()).size)
+            assertEquals(1, bobClient.pollAll(isForeground = true, pausedFriendIds = emptySet()).size)
 
             advanceTimeBy(60_000L) // t=310s: now unresponsive (310s of silence), but only 60s since our last send.
             aliceClient.sendLocation(2.0, 2.0, emptySet())
             assertTrue(
-                bobClient.poll(isForeground = true, pausedFriendIds = emptySet()).isEmpty(),
+                bobClient.pollAll(isForeground = true, pausedFriendIds = emptySet()).isEmpty(),
                 "unresponsive and not yet due for a throttled retry - must not send",
             )
 
             advanceTimeBy(250_000L) // t=560s: 310s since our last send - now due.
             aliceClient.sendLocation(3.0, 3.0, emptySet())
-            val delivered = bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            val delivered = bobClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
             assertEquals(1, delivered.size, "throttle interval elapsed - must send the throttled update")
             assertEquals(3.0, delivered[0].lat)
         }
@@ -216,14 +216,14 @@ class UnresponsiveFriendThrottleTest {
             val (aliceClient, bobClient) = pairedClients(mailbox)
 
             bobClient.sendLocation(0.0, 0.0, emptySet())
-            aliceClient.poll(isForeground = true, pausedFriendIds = emptySet()) // still sharing here - no keepalive.
+            aliceClient.pollAll(isForeground = true, pausedFriendIds = emptySet()) // still sharing here - no keepalive.
             val postsAfterFirstPoll = mailbox.allPosted.size
 
             // Alice pauses sharing (or turns it off entirely) and just does normal background
             // maintenance polling (every 30s) for two full throttle windows.
             repeat(20) {
                 advanceTimeBy(30_000L)
-                aliceClient.poll(isForeground = true, pausedFriendIds = emptySet(), sharingEnabled = false)
+                aliceClient.pollAll(isForeground = true, pausedFriendIds = emptySet(), sharingEnabled = false)
             }
 
             assertEquals(
@@ -235,7 +235,7 @@ class UnresponsiveFriendThrottleTest {
             // Alice resumes sharing and has a real location to send.
             advanceTimeBy(300_000L)
             aliceClient.sendLocation(1.0, 1.0, emptySet())
-            val delivered = bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            val delivered = bobClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
             assertEquals(1, delivered.size, "a real location must still get through once due, not be blocked by prior periodic keepalives")
             assertEquals(1.0, delivered[0].lat)
         }
@@ -255,7 +255,7 @@ class UnresponsiveFriendThrottleTest {
             val (aliceClient, bobClient) = pairedClients(mailbox)
 
             bobClient.sendLocation(0.0, 0.0, emptySet())
-            aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            aliceClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
             aliceClient.sendLocation(1.0, 1.0, emptySet()) // establishes a fresh lastSentTs baseline.
             val postsAfterFirstSend = mailbox.allPosted.size
 
@@ -263,7 +263,7 @@ class UnresponsiveFriendThrottleTest {
             // stalled heartbeat trigger. Must stay quiet until genuinely due.
             repeat(29) {
                 advanceTimeBy(30_000L)
-                aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
+                aliceClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
             }
             assertEquals(
                 0,
@@ -272,7 +272,7 @@ class UnresponsiveFriendThrottleTest {
             )
 
             advanceTimeBy(30_000L) // total 900s elapsed since the last real send - now due.
-            aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            aliceClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
             assertEquals(
                 1,
                 mailbox.allPosted.size - postsAfterFirstSend,
@@ -304,7 +304,7 @@ class UnresponsiveFriendThrottleTest {
             bobClient.enableAutomatedKeepalives = false
 
             bobClient.sendLocation(0.0, 0.0, emptySet())
-            aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            aliceClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
             aliceClient.sendLocation(1.0, 1.0, emptySet()) // lastRecvTs/lastSentTs baseline at t=0.
 
             // Bob goes quiet (never sends again) while Alice keeps running her normal
@@ -313,9 +313,9 @@ class UnresponsiveFriendThrottleTest {
             var delivered: List<net.af0.where.model.UserLocation> = emptyList()
             repeat(6) {
                 advanceTimeBy(300_000L)
-                aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
+                aliceClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
                 aliceClient.sendLocation(2.0, 2.0, emptySet())
-                delivered = bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
+                delivered = bobClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
             }
 
             assertTrue(
@@ -333,19 +333,19 @@ class UnresponsiveFriendThrottleTest {
             val (aliceClient, bobClient) = pairedClients(mailbox)
 
             bobClient.sendLocation(0.0, 0.0, emptySet())
-            aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            aliceClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
 
             advanceTimeBy(400_000L) // t=400s: unresponsive.
             aliceClient.sendLocation(1.0, 1.0, emptySet())
-            bobClient.poll(isForeground = true, pausedFriendIds = emptySet()) // drain the throttled send
+            bobClient.pollAll(isForeground = true, pausedFriendIds = emptySet()) // drain the throttled send
 
             // Bob sends a keepalive (or anything) - Alice's lastRecvTs updates immediately on poll.
             bobClient.sendLocation(9.0, 9.0, emptySet())
-            aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            aliceClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
 
             advanceTimeBy(1_000L) // barely any time later - well under the throttle interval.
             aliceClient.sendLocation(2.0, 2.0, emptySet())
-            val delivered = bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            val delivered = bobClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
             assertEquals(1, delivered.size, "must resume full cadence right away once the friend is heard from again")
         }
 
@@ -366,7 +366,7 @@ class UnresponsiveFriendThrottleTest {
             val bobClient = pairNewFriend(aliceManager, aliceClient, mailbox, "Bob")
 
             bobClient.sendLocation(0.0, 0.0, emptySet())
-            aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            aliceClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
 
             // Nothing logged yet - Bob is still responsive.
             assertTrue(aliceManager.diagnosticLog.value.none { it.contains("throttled as unresponsive") })
@@ -394,7 +394,7 @@ class UnresponsiveFriendThrottleTest {
             val aliceClient = LocationClient("http://localhost", aliceManager, mailbox)
             val bobClient = pairNewFriend(aliceManager, aliceClient, mailbox, "Bob")
             bobClient.sendLocation(0.0, 0.0, emptySet())
-            aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            aliceClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
 
             // Bob is explicitly paused, not unresponsive - this is a normal, expected no-op.
             aliceClient.sendLocation(1.0, 1.0, pausedFriendIds = aliceManager.listFriends().map { it.id }.toSet())
@@ -410,13 +410,13 @@ class UnresponsiveFriendThrottleTest {
             aliceClient.sendStoppedSharing() // sharing off...
             advanceTimeBy(5_000L)
             aliceClient.sendLocation(2.0, 2.0, emptySet()) // ...and on again: the forced send.
-            val delivered = bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            val delivered = bobClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
             assertEquals(listOf(2.0), delivered.map { it.lat }, "the resume must follow the stop, not wait out the throttle")
 
             // Once resumed, the throttle applies again.
             advanceTimeBy(5_000L)
             aliceClient.sendLocation(3.0, 3.0, emptySet())
-            assertTrue(bobClient.poll(isForeground = true, pausedFriendIds = emptySet()).isEmpty())
+            assertTrue(bobClient.pollAll(isForeground = true, pausedFriendIds = emptySet()).isEmpty())
         }
 
     // Alice's manager and client, Bob's client; Bob has been quiet for 10 min since each side got
@@ -426,9 +426,9 @@ class UnresponsiveFriendThrottleTest {
         val aliceClient = LocationClient("http://localhost", aliceManager, mailbox)
         val bobClient = pairNewFriend(aliceManager, aliceClient, mailbox, "Bob")
         bobClient.sendLocation(0.0, 0.0, emptySet())
-        aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
+        aliceClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
         aliceClient.sendLocation(1.0, 1.0, emptySet())
-        bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
+        bobClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
         advanceTimeBy(600_000L)
         return Triple(aliceManager, aliceClient, bobClient)
     }
@@ -449,7 +449,7 @@ class UnresponsiveFriendThrottleTest {
             aliceClient.processOutboxes() // the network is back: the stop goes out
             advanceTimeBy(5_000L)
             aliceClient.sendLocation(3.0, 3.0, emptySet())
-            val delivered = bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            val delivered = bobClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
             assertEquals(listOf(3.0), delivered.map { it.lat }, "the resume must still follow the stop")
         }
 
@@ -464,7 +464,7 @@ class UnresponsiveFriendThrottleTest {
             advanceTimeBy(5_000L)
             val restarted = LocationClient("http://localhost", aliceManager, mailbox) // e.g. killed while not sharing
             restarted.sendLocation(2.0, 2.0, emptySet())
-            val delivered = bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            val delivered = bobClient.pollAll(isForeground = true, pausedFriendIds = emptySet())
             assertEquals(listOf(2.0), delivered.map { it.lat }, "we can't tell the stop was last, so the resume must go")
         }
 }

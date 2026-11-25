@@ -45,6 +45,10 @@ class LocationServiceRestartWorker(
             pollThrottled(app)
             return Result.success()
         }
+        if (!ServicePolicy.shouldNudgeFromWorker(clock(), app.servicePolledAtMs.takeIf { it != 0L })) {
+            Log.i(TAG, "LocationService polled within its cadence; skipping heartbeat tick")
+            return Result.success()
+        }
         Log.i(TAG, "WorkManager heartbeat: ensuring LocationService is running + forcing tick")
         // ACTION_HEARTBEAT_TICK nudges an already-running but Doze-stalled service (a plain
         // startForegroundService is a no-op when it is up) and restarts a killed one.

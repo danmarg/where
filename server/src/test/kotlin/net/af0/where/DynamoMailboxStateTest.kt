@@ -1,5 +1,8 @@
 package net.af0.where
 
+import ch.qos.logback.classic.Logger
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import io.ktor.client.request.get
 import io.ktor.client.request.put
 import io.ktor.client.request.setBody
@@ -10,6 +13,7 @@ import io.ktor.http.contentType
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.jsonArray
 import net.af0.where.e2ee.DhPublicKey
 import net.af0.where.e2ee.EncryptedMessagePayload
@@ -19,6 +23,7 @@ import net.af0.where.e2ee.MessagePlaintext
 import net.af0.where.e2ee.ReceivedMessage
 import net.af0.where.e2ee.Session
 import net.af0.where.e2ee.toHex
+import org.slf4j.LoggerFactory
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.wait.strategy.Wait
 import org.testcontainers.utility.DockerImageName
@@ -687,8 +692,8 @@ class DynamoMailboxStateTest {
         failNextWrite = true
         assertFailsWith<SdkClientException> { state.post(token, JsonPrimitive("x"), "x") }
         // The landed row has no idempotency record yet, so the retry reaches the depth check,
-        // where that row already counts.
-        assertFalse(state.post(token, JsonPrimitive("x"), "x"), "the landed row filled the last slot")
+        // where that row already counts; it is recognized as queued, so the retry is a no-op.
+        assertTrue(state.post(token, JsonPrimitive("x"), "x"), "the landed row is recognized, not rejected")
 
         assertFalse(state.post(token, JsonPrimitive("y"), "y"), "the committed write filled the last slot")
     }
@@ -909,7 +914,8 @@ class DynamoMailboxStateTest {
         val now = 1_800_000_000_000L
         val state = store(clock = { now })
         val token = freshToken()
-        assertTrue(state.post(token, JsonPrimitive("m"), "m-1"))
+        val frame = EncryptedMessagePayload(envelope = ByteArray(4), ct = ByteArray(4), msgId = "m-1")
+        assertTrue(state.post(token, wireJson.encodeToJsonElement<MailboxPayload>(frame), "m-1"))
 
         fun expiresAt(table: String) = rawItem(token, "m-1", table).getValue("expiresAt").n().toLong()
         assertEquals((now / 1000) + net.af0.where.e2ee.MAILBOX_RETENTION_SECONDS, expiresAt("test_messages"))
@@ -924,6 +930,18 @@ class DynamoMailboxStateTest {
         val init = kotlinx.serialization.json.buildJsonObject { put("type", JsonPrimitive("KeyExchangeInit")) }
         assertTrue(state.post(token, init, "init-1"))
         assertEquals((now / 1000) + 7 * 86_400, rawItem(token, "init-1").getValue("expiresAt").n().toLong())
+    }
+
+    @Test
+    fun `an unread payload of any other type is kept 7 days, not the whole retention`() {
+        val now = 1_800_000_000_000L
+        val state = store(clock = { now })
+        val token = freshToken()
+        val junk = kotlinx.serialization.json.buildJsonObject { put("type", JsonPrimitive("x")) }
+        assertTrue(state.post(token, junk, "junk-1"))
+        assertTrue(state.post(token, JsonPrimitive("m"), "junk-2"))
+        assertEquals((now / 1000) + 7 * 86_400, rawItem(token, "junk-1").getValue("expiresAt").n().toLong())
+        assertEquals((now / 1000) + 7 * 86_400, rawItem(token, "junk-2").getValue("expiresAt").n().toLong())
     }
 
     @Test
@@ -963,6 +981,358 @@ class DynamoMailboxStateTest {
 
         now += 24 * 3600_000L
         assertTrue(state.post(token, JsonPrimitive("fresh"), "fresh-1"), "after a day the re-count drops them")
+    }
+
+    @Test
+    fun `a retry of a still-queued message on a full queue is a no-op once its dedup record is gone`() {
+        val state = store()
+        val token = freshToken()
+        seedFullQueue(token)
+        // seed-0 is queued; its dedup record never existed (like one the TTL sweep removed).
+        assertTrue(state.post(token, JsonPrimitive("retry"), "seed-0"), "matches InMemoryMailboxState: 204, not 429")
+        assertTrue(hasReceivedId(token, "seed-0"), "the retry restores the dedup record")
+        assertFalse(state.post(token, JsonPrimitive("new"), "brand-new"), "a genuinely new message is still rejected")
+    }
+
+    @Test
+    fun `deleting a row with no expiresAt does not free a depth-guard slot`() {
+        val state = store()
+        val token = freshToken()
+        seedFullQueue(token)
+        assertFalse(state.post(token, JsonPrimitive("over"), "over-1"), "full queue rejects (and caches the count)")
+        // Never counted (the count filters on expiresAt), so acking it must not decrement.
+        createDynamoDbClient("test", "test", "us-east-1", endpoint()).use { client ->
+            client.putItem(
+                PutItemRequest.builder()
+                    .tableName("test_messages_${tableCounter - 1}")
+                    .item(
+                        mapOf(
+                            "token" to AttributeValue.fromS(token),
+                            "msgId" to AttributeValue.fromS("no-expiry"),
+                            "payload" to AttributeValue.fromS("\"x\""),
+                            "postedAt" to AttributeValue.fromN(System.currentTimeMillis().toString()),
+                        ),
+                    )
+                    .build(),
+            )
+        }
+        state.deleteById(token, "no-expiry")
+        assertFalse(state.post(token, JsonPrimitive("over"), "over-2"), "still full")
+        state.deleteByIds(token, listOf("seed-0", "seed-1"))
+        assertTrue(state.post(token, JsonPrimitive("fits"), "fits-1"))
+    }
+
+    /** Counts DynamoDB calls by name, with queries split into "query" (base table) and "queryIndex". */
+    private fun countingStore(
+        calls: MutableMap<String, Int>,
+        clock: () -> Long = System::currentTimeMillis,
+        extra: (String, Array<Any?>) -> Any? = { _, _ -> null },
+    ) = store(clock = clock, wrap = { real ->
+        intercepting(real) { name, args ->
+            val req = args.getOrNull(0) as? software.amazon.awssdk.services.dynamodb.model.QueryRequest
+            val key = if (name == "query" && req?.indexName() != null) "queryIndex" else name
+            calls.merge(key, 1, Int::plus)
+            extra(name, args)
+        }
+    })
+
+    @Test
+    fun `a post after its queue was emptied by acks needs no depth COUNT query`() {
+        val calls = mutableMapOf<String, Int>()
+        val state = countingStore(calls)
+        val token = freshToken()
+        assertTrue(state.post(token, JsonPrimitive(1), "m-1"))
+        assertEquals(1, calls["query"], "first post seeds the cache")
+        state.deleteById(token, "m-1")
+        assertTrue(state.post(token, JsonPrimitive(2), "m-2"))
+        state.deleteByIds(token, listOf("m-2"))
+        assertTrue(state.post(token, JsonPrimitive(3), "m-3"))
+        assertEquals(1, calls["query"], "a cache entry at 0 is kept, so no re-count")
+        assertEquals(listOf<kotlinx.serialization.json.JsonElement>(JsonPrimitive(3)), state.drain(token))
+    }
+
+    @Test
+    fun `a full queue acked down to exactly zero is refilled from the cached zero`() {
+        val calls = mutableMapOf<String, Int>()
+        val state = countingStore(calls)
+        val token = freshToken()
+        seedFullQueue(token)
+        assertFalse(state.post(token, JsonPrimitive("x"), "over")) // seeds the cache at the cap
+        assertEquals(1, calls["query"])
+        state.deleteByIds(token, (0 until TEST_MAX_QUEUE_DEPTH).map { "seed-$it" }) // down to exactly 0
+        // The cache stayed at 0 (no re-count) and counts from there: a rejected-then-freed queue
+        // takes new posts and the next ack of them frees slots one-for-one.
+        repeat(3) { assertTrue(state.post(token, JsonPrimitive(it), "n-$it")) }
+        assertEquals(1, calls["query"], "no re-count after reaching zero")
+        assertEquals(3, state.drain(token)?.size)
+        state.deleteByIds(token, listOf("n-0", "n-1", "n-2"))
+        assertEquals(emptyList(), state.drain(token))
+        assertEquals(1, calls["query"])
+    }
+
+    @Test
+    fun `deleteByIds skips the existence check when no live count is cached`() {
+        val calls = mutableMapOf<String, Int>()
+        val state = countingStore(calls)
+        val token = freshToken()
+        // No cache entry (e.g. after a restart): nothing to decrement, so no BatchGetItem.
+        assertEquals(1, state.deleteByIds(token, listOf("ghost")))
+        assertEquals(null, calls["batchGetItem"])
+
+        // With live messages cached the check still runs, and frees exactly the existing slots.
+        assertTrue(state.post(token, JsonPrimitive(1), "m-1"))
+        assertTrue(state.post(token, JsonPrimitive(2), "m-2"))
+        assertEquals(2, state.deleteByIds(token, listOf("m-1", "m-2")))
+        assertEquals(1, calls["batchGetItem"])
+        // A retried ack of the now-empty (cached 0) queue skips it again.
+        assertEquals(2, state.deleteByIds(token, listOf("m-1", "m-2")))
+        assertEquals(1, calls["batchGetItem"])
+        assertEquals(emptyList(), state.drain(token))
+    }
+
+    @Test
+    fun `retried acks and a refill after an uncached ack keep the depth guard exact`() {
+        val state = store()
+        val token = freshToken()
+        seedFullQueue(token)
+        // Ack with no cache entry (never seeded in this process), then seed and fill to the cap.
+        assertEquals(2, state.deleteByIds(token, listOf("seed-0", "seed-1")))
+        assertTrue(state.post(token, JsonPrimitive("a"), "a-1"))
+        assertTrue(state.post(token, JsonPrimitive("b"), "a-2"))
+        assertFalse(state.post(token, JsonPrimitive("c"), "a-3"))
+    }
+
+    @Test
+    fun `an empty poll is answered without querying until a post, and is re-queried after a minute`() {
+        var now = System.currentTimeMillis()
+        val calls = mutableMapOf<String, Int>()
+        val state = countingStore(calls, clock = { now })
+        val token = freshToken()
+        assertEquals(emptyList(), state.drain(token))
+        assertEquals(emptyList(), state.drain(token))
+        assertEquals(1, calls["queryIndex"], "second empty poll is served from the cache")
+
+        now += 61_000
+        assertEquals(emptyList(), state.drain(token))
+        assertEquals(2, calls["queryIndex"], "re-queried once the entry is a minute old")
+
+        assertTrue(state.post(token, JsonPrimitive("hi"), "m-1"))
+        assertEquals(listOf<kotlinx.serialization.json.JsonElement>(JsonPrimitive("hi")), state.drain(token), "post invalidates")
+        assertEquals(3, calls["queryIndex"])
+        state.deleteById(token, "m-1")
+        now += 10_000
+        assertEquals(emptyList(), state.drain(token))
+        assertEquals(emptyList(), state.drain(token))
+        assertEquals(4, calls["queryIndex"], "emptied again: one query, then cached")
+        // Other tokens are unaffected.
+        assertEquals(emptyList(), state.drain(freshToken()))
+        assertEquals(5, calls["queryIndex"])
+    }
+
+    @Test
+    fun `an empty result is not cached right after a post, nor when a post raced the query`() {
+        var now = System.currentTimeMillis()
+        val calls = mutableMapOf<String, Int>()
+        lateinit var state: DynamoMailboxState
+        val token = freshToken()
+        var racePost = false
+        state =
+            countingStore(calls, clock = { now }) { name, args ->
+                val req = args.getOrNull(0) as? software.amazon.awssdk.services.dynamodb.model.QueryRequest
+                if (name == "query" && req?.indexName() != null && racePost) {
+                    racePost = false
+                    // A post lands while the drain's query is in flight; the query itself saw nothing.
+                    assertTrue(state.post(token, JsonPrimitive("raced"), "raced-1"))
+                    return@countingStore software.amazon.awssdk.services.dynamodb.model.QueryResponse.builder().build()
+                }
+                null
+            }
+        racePost = true
+        assertEquals(emptyList(), state.drain(token))
+        now += 10_000
+        assertEquals(listOf<kotlinx.serialization.json.JsonElement>(JsonPrimitive("raced")), state.drain(token))
+
+        // Within the quiet period after a post, an empty answer (lagging index) is not remembered.
+        state.deleteById(token, "raced-1")
+        assertTrue(state.post(token, JsonPrimitive("q"), "q-1"))
+        state.deleteById(token, "q-1")
+        val before = calls["queryIndex"]!!
+        now += 1_000
+        assertEquals(emptyList(), state.drain(token))
+        assertEquals(emptyList(), state.drain(token))
+        assertEquals(before + 2, calls["queryIndex"])
+        now += 5_000
+        assertEquals(emptyList(), state.drain(token))
+        assertEquals(emptyList(), state.drain(token))
+        assertEquals(before + 3, calls["queryIndex"])
+    }
+
+    @Test
+    fun `an empty result is not cached when the poll state was evicted and recreated mid-query`() {
+        var now = System.currentTimeMillis()
+        lateinit var state: DynamoMailboxState
+        val token = freshToken()
+        var race = false
+        state =
+            countingStore(mutableMapOf(), clock = { now }) { name, args ->
+                val req = args.getOrNull(0) as? software.amazon.awssdk.services.dynamodb.model.QueryRequest
+                if (name == "query" && req?.indexName() != null && race) {
+                    race = false
+                    state.evict() // drops the idle entry the drain read
+                    assertTrue(state.post(token, JsonPrimitive("new"), "new-1")) // recreates it
+                    return@countingStore software.amazon.awssdk.services.dynamodb.model.QueryResponse.builder().build()
+                }
+                null
+            }
+        assertTrue(state.post(token, JsonPrimitive("old"), "old-1"))
+        state.deleteById(token, "old-1")
+        now += 11 * 60_000L // the entry is idle, so evict() may remove it
+        race = true
+        assertEquals(emptyList(), state.drain(token))
+        now += 10_000
+        assertEquals(listOf<kotlinx.serialization.json.JsonElement>(JsonPrimitive("new")), state.drain(token))
+    }
+
+    @Test
+    fun `the depth re-count reads strongly consistent`() {
+        val consistent = mutableListOf<Boolean?>()
+        val state =
+            store(wrap = { real ->
+                intercepting(real) { name, args ->
+                    val req = args.getOrNull(0) as? software.amazon.awssdk.services.dynamodb.model.QueryRequest
+                    if (name == "query" && req != null && req.indexName() == null) consistent.add(req.consistentRead())
+                    null
+                }
+            })
+        assertTrue(state.post(freshToken(), JsonPrimitive("x"), "m-1"))
+        assertEquals(listOf<Boolean?>(true), consistent)
+    }
+
+    @Test
+    fun `malformed items are deleted when drain skips them and stop counting toward the depth cap`() {
+        val state = store()
+        val token = freshToken()
+        val now = System.currentTimeMillis()
+        assertTrue(state.post(token, JsonPrimitive("good"), "good-1")) // seeds the depth cache
+        createDynamoDbClient("test", "test", "us-east-1", endpoint()).use { client ->
+            listOf("bad-0" to "{not json", "bad-1" to "{also not").forEachIndexed { i, (id, payload) ->
+                client.putItem(
+                    PutItemRequest.builder()
+                        .tableName("test_messages_${tableCounter - 1}")
+                        .item(
+                            mapOf(
+                                "token" to AttributeValue.fromS(token),
+                                "msgId" to AttributeValue.fromS(id),
+                                "payload" to AttributeValue.fromS(payload),
+                                "postedAt" to AttributeValue.fromN((now + i + 1).toString()),
+                                "expiresAt" to AttributeValue.fromN((now / 1000 + 3600).toString()),
+                            ),
+                        )
+                        .build(),
+                )
+            }
+        }
+        val logs = captureLogs { assertEquals(listOf(JsonPrimitive("good")), state.drain(token)) }
+        assertEquals(
+            listOf("Skipped 2 malformed mailbox items (compact=0, payload=2)"),
+            logs.filter { it.first == "Server" }.map { it.second },
+        )
+        logs.map { it.second }.forEach {
+            assertFalse(it.contains(token) || it.contains("bad-"), "log line leaked an identifier: $it")
+        }
+        assertTrue(rawItem(token, "bad-0").isEmpty(), "malformed item removed")
+        assertTrue(rawItem(token, "bad-1").isEmpty(), "malformed item removed")
+        assertEquals(1, rawItem(token, "good-1").size.coerceAtMost(1), "the valid message is untouched")
+        val second = captureLogs { assertEquals(listOf(JsonPrimitive("good")), state.drain(token)) }
+        assertTrue(second.none { it.first == "Server" }, "nothing left to warn about")
+    }
+
+    @Test
+    fun `deleting corrupt items on drain frees their depth-guard slots`() {
+        val state = store()
+        val token = freshToken()
+        seedFullQueue(token)
+        assertFalse(state.post(token, JsonPrimitive("over"), "over-1"), "full queue rejects (and caches the count)")
+        createDynamoDbClient("test", "test", "us-east-1", endpoint()).use { client ->
+            listOf("seed-0", "seed-1").forEach { id ->
+                client.putItem(
+                    PutItemRequest.builder()
+                        .tableName("test_messages_${tableCounter - 1}")
+                        .item(rawItem(token, id) + mapOf("payload" to AttributeValue.fromS("{corrupt")))
+                        .build(),
+                )
+            }
+        }
+        assertEquals(50, state.drain(token)!!.size)
+        assertTrue(rawItem(token, "seed-0").isEmpty())
+        assertTrue(state.post(token, JsonPrimitive("a"), "free-1"), "first freed slot")
+        assertTrue(state.post(token, JsonPrimitive("b"), "free-2"), "second freed slot")
+        assertFalse(state.post(token, JsonPrimitive("c"), "free-3"), "full again")
+    }
+
+    @Test
+    fun `an item in a compact layout this binary cannot decode is skipped but not deleted`() {
+        val state = store(compactPayloads = true)
+        val token = freshToken()
+        val now = System.currentTimeMillis()
+        createDynamoDbClient("test", "test", "us-east-1", endpoint()).use { client ->
+            client.putItem(
+                PutItemRequest.builder()
+                    .tableName("test_messages_${tableCounter - 1}")
+                    .item(
+                        mapOf(
+                            "token" to AttributeValue.fromS(token),
+                            "msgId" to AttributeValue.fromS("future-1"),
+                            "v" to AttributeValue.fromS("2-future"),
+                            "e" to AttributeValue.fromB(SdkBytes.fromByteArray(byteArrayOf(1))),
+                            "c" to AttributeValue.fromB(SdkBytes.fromByteArray(byteArrayOf(1))),
+                            "postedAt" to AttributeValue.fromN(now.toString()),
+                            "expiresAt" to AttributeValue.fromN((now / 1000 + 3600).toString()),
+                        ),
+                    )
+                    .build(),
+            )
+        }
+        repeat(2) { assertEquals(emptyList(), state.drain(token)) }
+        assertFalse(rawItem(token, "future-1").isEmpty(), "a layout this binary can't read is left for the newer one")
+    }
+
+    @Test
+    fun `cleanup of a corrupt item leaves a valid replacement posted since the drain read it`() {
+        var replace: (() -> Unit)? = null
+        val state =
+            store(wrap = { real ->
+                intercepting(real) { name, args ->
+                    if (name == "deleteItem" && (args[0] as? DeleteItemRequest)?.tableName()?.startsWith("test_messages_") == true) {
+                        replace?.also { replace = null }?.invoke()
+                    }
+                    null
+                }
+            })
+        val token = freshToken()
+        val now = System.currentTimeMillis()
+        val client = createDynamoDbClient("test", "test", "us-east-1", endpoint())
+
+        fun put(payload: String) =
+            client.putItem(
+                PutItemRequest.builder()
+                    .tableName("test_messages_${tableCounter - 1}")
+                    .item(
+                        mapOf(
+                            "token" to AttributeValue.fromS(token),
+                            "msgId" to AttributeValue.fromS("m-1"),
+                            "payload" to AttributeValue.fromS(payload),
+                            "postedAt" to AttributeValue.fromN(now.toString()),
+                            "expiresAt" to AttributeValue.fromN((now / 1000 + 3600).toString()),
+                        ),
+                    )
+                    .build(),
+            )
+        put("{corrupt")
+        replace = { put("\"valid\"") } // acked and re-sent between drain's read and its cleanup
+        assertEquals(emptyList(), state.drain(token))
+        client.close()
+        assertEquals(listOf(JsonPrimitive("valid")), state.drain(token), "the replacement survived the cleanup")
     }
 
     private fun rawItem(
@@ -1096,7 +1466,29 @@ class DynamoMailboxStateTest {
         }
         Thread.sleep(10)
         assertTrue(state.post(token, RealMessages.wire(second), second.msgId))
-        assertEquals(listOf(RealMessages.wire(first), RealMessages.wire(second)), state.drain(token))
+        val logs = captureLogs { assertEquals(listOf(RealMessages.wire(first), RealMessages.wire(second)), state.drain(token)) }
+        // One summary line per poll, and the redaction policy holds: no token, no msgId.
+        assertEquals(
+            listOf("Skipped 4 malformed mailbox items (compact=2, payload=2)"),
+            logs.filter { it.first == "Server" }.map { it.second },
+        )
+        logs.map { it.second }.forEach { line ->
+            assertFalse(line.contains(token), "log line leaked token: $line")
+            assertFalse(line.contains("bad-"), "log line leaked msgId: $line")
+        }
+    }
+
+    /** (logger name, message) for everything the root logger receives while [block] runs. */
+    private fun captureLogs(block: () -> Unit): List<Pair<String, String>> {
+        val root = LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME) as Logger
+        val appender = ListAppender<ILoggingEvent>().apply { start() }
+        root.addAppender(appender)
+        try {
+            block()
+        } finally {
+            root.detachAppender(appender)
+        }
+        return appender.list.map { it.loggerName to it.formattedMessage }
     }
 
     @Test

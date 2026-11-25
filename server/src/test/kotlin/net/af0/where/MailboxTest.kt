@@ -5,9 +5,13 @@ import io.ktor.client.request.delete
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.server.testing.*
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import net.af0.where.e2ee.MailboxPayload
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -16,6 +20,27 @@ class MailboxTest {
     private val json = Json { ignoreUnknownKeys = true }
 
     private fun isLocalhost(): Boolean = System.getenv("WHERE_TEST_SERVER_URL")?.contains("localhost") != false
+
+    /**
+     * messageTtlMs keeps only session frames for the full retention and everything else 7 days. A new
+     * MailboxPayload type must be classified there on purpose: an unclassified session type would
+     * silently expire after 7 days and break sessions for friends away longer.
+     */
+    @OptIn(ExperimentalSerializationApi::class)
+    @Test
+    fun `every MailboxPayload type is classified for retention`() {
+        // The intended retention of each type. A new type fails here until it is added, and the
+        // assertion below checks messageTtlMs actually gives it that TTL.
+        val expected = mapOf("EncryptedMessage" to MAILBOX_TTL_MS, "KeyExchangeInit" to SHORT_MESSAGE_TTL_MS)
+        val subclasses = MailboxPayload.serializer().descriptor.getElementDescriptor(1)
+        val names = (0 until subclasses.elementsCount).map { subclasses.getElementName(it) }.toSet()
+        assertEquals(expected.keys, names, "MailboxPayload types changed: decide each new type's retention in messageTtlMs")
+        for ((type, ttl) in expected) {
+            assertEquals(ttl, messageTtlMs(buildJsonObject { put("type", type) }), "TTL for $type")
+        }
+        // A non-string "type" is not a session frame.
+        assertEquals(SHORT_MESSAGE_TTL_MS, messageTtlMs(buildJsonObject { put("type", JsonPrimitive(1)) }))
+    }
 
     // ---------------------------------------------------------------------------
     // PUT /inbox/{token}/{msgId}
@@ -319,16 +344,37 @@ class MailboxTest {
 
     private val retentionDays = net.af0.where.e2ee.MAILBOX_RETENTION_SECONDS / 86_400
 
+    private val sessionFrame = Json.parseToJsonElement("""{"type":"EncryptedMessage","v":1,"envelope":"AA==","ct":"BB=="}""")
+
     @Test
     fun `an unread message is kept for the whole retention`() {
         var now = 1_800_000_000_000L
         val state = InMemoryMailboxState(clock = { now })
-        state.post("keep", JsonPrimitive("m"), "m-1")
+        state.post("keep", sessionFrame, "m-1")
         now += (retentionDays - 1) * day
         state.evictForTest(rateLimitWindowMs = 0)
         assertEquals(1, state.drain("keep")!!.size, "still there a day before retention ends")
         now += 2 * day
         assertTrue(state.drain("keep")!!.isEmpty(), "gone after retention")
+    }
+
+    @Test
+    fun `anything but a session frame is kept only 7 days`() {
+        var now = 1_800_000_000_000L
+        val state = InMemoryMailboxState(clock = { now })
+        val payloads =
+            listOf(
+                Json.parseToJsonElement("""{"type":"KeyExchangeInit"}"""),
+                Json.parseToJsonElement("""{"type":"x"}"""),
+                Json.parseToJsonElement("""{"no":"type"}"""),
+                JsonPrimitive("m"),
+            )
+        payloads.forEachIndexed { i, p -> state.post("short-$i", p, "m-$i") }
+        now += 6 * day
+        state.evictForTest(rateLimitWindowMs = 0)
+        payloads.indices.forEach { assertEquals(1, state.drain("short-$it")!!.size, "${payloads[it]} kept 6 days") }
+        now += 2 * day
+        payloads.indices.forEach { assertTrue(state.drain("short-$it")!!.isEmpty(), "${payloads[it]} gone after 7 days") }
     }
 
     @Test
@@ -351,10 +397,10 @@ class MailboxTest {
     fun `a retry of a message still queued is not queued twice after its dedup record expires`() {
         var now = 1_800_000_000_000L
         val state = InMemoryMailboxState(clock = { now })
-        state.post("live-retry", JsonPrimitive("m"), "m-1")
+        state.post("live-retry", sessionFrame, "m-1")
         now += 8 * day
         state.evictForTest(rateLimitWindowMs = 0)
-        state.post("live-retry", JsonPrimitive("m"), "m-1")
+        state.post("live-retry", sessionFrame, "m-1")
         assertEquals(1, state.drain("live-retry")!!.size)
     }
 
@@ -387,6 +433,24 @@ class MailboxTest {
 
         // Drain should still return empty (no phantom entry).
         assertTrue(state.drain(token)!!.isEmpty(), "evicted mailbox entry should return empty")
+    }
+
+    @Test
+    fun `evict racing a post never loses the message the post accepted`() {
+        val state = InMemoryMailboxState()
+        val stop = java.util.concurrent.atomic.AtomicBoolean(false)
+        val evictor = Thread { while (!stop.get()) state.evictForTest(rateLimitWindowMs = 60_000) }
+        evictor.start()
+        try {
+            repeat(3000) { i ->
+                val token = "racetoken$i"
+                assertTrue(state.post(token, JsonPrimitive("m"), "m-$i"))
+                assertEquals(1, state.drain(token)!!.size, "message accepted for $token was lost to eviction")
+            }
+        } finally {
+            stop.set(true)
+            evictor.join()
+        }
     }
 
     @Test

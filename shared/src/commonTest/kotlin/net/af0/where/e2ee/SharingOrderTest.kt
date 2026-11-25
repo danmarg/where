@@ -181,4 +181,19 @@ class SharingOrderTest {
             p.alice.sendStoppedSharingToFriend(p.bobId)
             assertNotNull(p.bobReads().first.stoppedAtTs)
         }
+
+    @Test
+    fun `the pin follows the newest Location of a batch not the last one`() =
+        runTest {
+            val p = paired()
+            clock.advanceSeconds(100)
+            p.alice.sendLocation(1.0, 1.0, stationary = true, stamp = p.alice.sharingStamp())
+            // The clock steps back, so the second frame is the last in the batch but older.
+            clock.advanceSeconds(-50)
+            p.alice.sendLocation(2.0, 2.0, stamp = p.alice.sharingStamp())
+            val (alice, lats) = p.bobReads()
+            assertEquals(listOf(1.0, 2.0), lats)
+            assertEquals(1.0, alice.lastLat)
+            assertNotNull(alice.stationarySinceTs)
+        }
 }

@@ -87,7 +87,7 @@ class CatchUpTest {
             assertEquals(150, mailbox.mailboxes[aliceRecvToken]?.size)
 
             // 4. Alice polls. She should drain all 150 messages in one call because they are on the same token.
-            val updates = aliceClient.poll(isForeground = true)
+            val updates = aliceClient.pollAll(isForeground = true)
 
             // Alice might also receive a keepalive if Bob's client was used, but here we manually posted.
             // Wait, poll() calls pollFriend for each friend.
@@ -150,7 +150,7 @@ class CatchUpTest {
             // 2. Bob triggers a ratchet (e.g. by receiving something from Alice and then sending)
             // Alice sends a keepalive
             aliceClient.sendKeepalive(bobEntry.id)
-            bobClient.poll() // Bob receives keepalive, ratchets
+            bobClient.pollAll() // Bob receives keepalive, ratchets
 
             // Bob sends 10 more messages on Token B
             val bobFriend = bobManager.getFriend(bobEntry.id)!!
@@ -166,7 +166,7 @@ class CatchUpTest {
             }
 
             // Alice polls. She should get 60 from Token A, then follow to Token B and get 10 more.
-            val updates = aliceClient.poll()
+            val updates = aliceClient.pollAll()
             // Alice receives 60 + 10 = 70 updates
             assertEquals(70, updates.size, "Alice should have received all 70 updates across two tokens")
         }
@@ -206,7 +206,7 @@ class CatchUpTest {
 
             // 2. Poll many times to trigger force-ACK
             for (i in 1 until MAX_SILENT_DROP_RETRIES) {
-                aliceClient.poll()
+                aliceClient.pollAll()
                 assertNotNull(
                     mailbox.mailboxes[currentAliceRecvToken]?.find { it.msgId == "bad-msg" },
                     "Should not have ACKed yet at retry $i",
@@ -214,7 +214,7 @@ class CatchUpTest {
             }
 
             // 3. This poll should trigger force-ACK and clear the mailbox
-            aliceClient.poll()
+            aliceClient.pollAll()
             assertNull(mailbox.mailboxes[currentAliceRecvToken]?.find { it.msgId == "bad-msg" }, "Should have force-ACKed")
         }
 
@@ -248,7 +248,7 @@ class CatchUpTest {
             }
 
             // 2. Poll. It should drain and set isCaughtUp to true.
-            aliceClient.poll()
+            aliceClient.pollAll()
             val aliceFriendAfter = aliceManager.getFriend(bobEntry.id)!!
             assertTrue(aliceFriendAfter.isCaughtUp, "Should be caught up after draining mailbox")
 
@@ -260,7 +260,7 @@ class CatchUpTest {
             assertTrue(aliceManager.getFriend(bobEntry.id)!!.isCaughtUp, "Should still be true until next poll finishes")
 
             // 4. Poll again.
-            aliceClient.poll()
+            aliceClient.pollAll()
             assertTrue(aliceManager.getFriend(bobEntry.id)!!.isCaughtUp, "Should still be caught up after second poll")
         }
 }

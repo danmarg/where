@@ -84,6 +84,26 @@ class LocationServiceRestartWorkerTest {
         }
 
     @Test
+    fun serviceJustPolled_workerSkipsTheTick() =
+        runTest {
+            shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
+            addPendingInvite()
+            val now = 5_000_000_000L
+            app.servicePolledAtMs = now - 60_000
+            try {
+                val w = worker().also { it.clock = { now } }
+                assertEquals(ListenableWorker.Result.success(), w.doWork())
+                assertNull(shadowOf(app).nextStartedService, "polled a minute ago; no tick")
+
+                app.servicePolledAtMs = now - PollPolicy.BACKGROUND_INTERVAL_MS
+                w.doWork()
+                assertNotNull(shadowOf(app).nextStartedService, "a poll a cadence ago is due a tick")
+            } finally {
+                app.servicePolledAtMs = 0L
+            }
+        }
+
+    @Test
     @Config(sdk = [34])
     fun withLocationPermission_serviceStartRefused_stillPollsAndSucceeds() =
         runTest {

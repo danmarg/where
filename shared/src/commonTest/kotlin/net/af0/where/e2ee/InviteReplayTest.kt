@@ -1,6 +1,7 @@
 package net.af0.where.e2ee
 
 import kotlinx.coroutines.test.runTest
+import net.af0.where.db.WhereDatabase
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -77,5 +78,74 @@ class InviteReplayTest {
             val restarted = testE2eeManager(driver)
             assertFailsWith<InviteAlreadyAcceptedException> { restarted.processScannedQr(invite, "Bob") }
             assertEquals(1, restarted.listFriends().size)
+        }
+
+    @Test
+    fun aRemovedFriendsInviteCannotPairAgain() =
+        runTest {
+            val alice = testE2eeManager(createTestSqlDriver())
+            val driver = createTestSqlDriver()
+            val bob = testE2eeManager(driver)
+            val invite = alice.createInvite("Alice")
+            val (_, friend) = bob.processScannedQr(invite, "Bob")
+            bob.deleteFriendKeepingOutbox(friend.id, null)
+            assertTrue(bob.listFriends().isEmpty())
+
+            assertFailsWith<InviteAlreadyAcceptedException> { bob.processScannedQr(invite, "Bob") }
+            // The record is in the database, so a restart remembers it too.
+            assertFailsWith<InviteAlreadyAcceptedException> { testE2eeManager(driver).processScannedQr(invite, "Bob") }
+            assertTrue(bob.listFriends().isEmpty())
+            // A new invite from the same person is unaffected.
+            bob.processScannedQr(alice.createInvite("Alice"), "Bob")
+            assertEquals(1, bob.listFriends().size)
+        }
+
+    @Test
+    fun theConsumedRecordIsPrunedAfterTheInviteExpires() =
+        runTest {
+            val clock = MockTimeProvider()
+            TimeSource.setProvider(clock)
+            try {
+                val driver = createTestSqlDriver()
+                val alice = testE2eeManager(createTestSqlDriver())
+                val bob = testE2eeManager(driver)
+                val invite = alice.createInvite("Alice")
+                val (_, friend) = bob.processScannedQr(invite, "Bob")
+                bob.deleteFriendKeepingOutbox(friend.id, null)
+
+                // Past the invite's life the link is refused as expired, not as already accepted.
+                clock.advanceSeconds(INVITE_LIFETIME_SECONDS + 3 * INVITE_EXPIRY_GRACE_SECONDS)
+                assertFailsWith<InviteExpiredException> { bob.processScannedQr(invite, "Bob") }
+
+                val row = fingerprint(invite.ekPub.toDhPublicKey()).toByteArray()
+                val queries = WhereDatabase(driver).consumedInvitesQueries
+                assertEquals(1L, queries.isConsumed(row, 0L).executeAsOne(), "kept until a later accept prunes it")
+                bob.processScannedQr(alice.createInvite("Alice"), "Bob")
+                assertEquals(0L, queries.isConsumed(row, 0L).executeAsOne())
+            } finally {
+                TimeSource.setProvider(DefaultTimeProvider)
+            }
+        }
+
+    @Test
+    fun anInviteWithoutAnExpiryStaysConsumed() =
+        runTest {
+            val clock = MockTimeProvider()
+            TimeSource.setProvider(clock)
+            try {
+                val alice = testE2eeManager(createTestSqlDriver())
+                val bob = testE2eeManager(createTestSqlDriver())
+                val invite = alice.createInvite("Alice").copy(expiresAt = null)
+                val (_, friend) = bob.processScannedQr(invite, "Bob")
+                bob.deleteFriendKeepingOutbox(friend.id, null)
+
+                clock.advanceSeconds(3600)
+                // Another accepted invite runs the prune; the undated record must survive it.
+                bob.processScannedQr(alice.createInvite("Alice"), "Bob")
+                assertTrue(bob.isInviteConsumed(invite))
+                assertFailsWith<InviteAlreadyAcceptedException> { bob.processScannedQr(invite, "Bob") }
+            } finally {
+                TimeSource.setProvider(DefaultTimeProvider)
+            }
         }
 }

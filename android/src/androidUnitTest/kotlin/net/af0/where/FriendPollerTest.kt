@@ -41,6 +41,8 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.milliseconds
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
@@ -101,7 +103,7 @@ class FriendPollerTest {
     ) = PendingInviteResult(mockk<KeyExchangeInitPayload>(relaxed = true), inviteEk, multiple, error)
 
     @Test
-    fun poll_forwardsFriendUpdatesToUiAndStore() =
+    fun poll_forwardsFriendUpdatesToUiWithoutRewritingStore() =
         runTest {
             val update = UserLocation("f1", 1.0, 2.0, 123L)
             coEvery { client.poll(any(), any(), any()) } returns listOf(update)
@@ -109,7 +111,8 @@ class FriendPollerTest {
             poller.poll()
 
             assertEquals(update, source.friendLocations.value["f1"])
-            coVerify { manager.updateLastLocation("f1", 1.0, 2.0, 123L) }
+            // processBatch already stored it: no second write per update.
+            coVerify(exactly = 0) { manager.updateLastLocation(any(), any(), any(), any()) }
             assertEquals(ConnectionStatus.Ok, source.connectionStatus.value)
         }
 
@@ -257,29 +260,6 @@ class FriendPollerTest {
         }
 
     @Test
-    fun poll_expiredInviteCleanup_runsAtMostOncePerHour() =
-        runTest {
-            poller.poll()
-            now += 59 * 60_000L
-            poller.poll()
-            coVerify(exactly = 1) { manager.cleanupExpiredInvites() }
-
-            now += 2 * 60_000L
-            poller.poll()
-            coVerify(exactly = 2) { manager.cleanupExpiredInvites() }
-        }
-
-    @Test
-    fun poll_cleanupFailure_isReportedNotThrown() =
-        runTest {
-            coEvery { manager.cleanupExpiredInvites() } throws RuntimeException("db")
-
-            poller.poll()
-
-            assertTrue(source.connectionStatus.value is ConnectionStatus.Error)
-        }
-
-    @Test
     fun poll_concurrentCallsAreSerialized() =
         runTest {
             val gate = CompletableDeferred<Unit>()
@@ -311,12 +291,37 @@ class FriendPollerTest {
 
     @Test
     fun isRapidPolling_trueWhenInviteSheetShowing() {
+        source.setAppForeground(true)
         ui.setInviteSheetShowing(true)
         assertTrue(poller.isRapidPolling())
     }
 
     @Test
+    fun isRapidPolling_openInviteSheetStopsWhenBackgrounded() {
+        source.setAppForeground(true)
+        ui.setInviteSheetShowing(true)
+        ui.onPendingQrForNaming(mockk<QrPayload>(relaxed = true))
+        assertTrue(poller.isRapidPolling())
+
+        // Sharing the link leaves the app; Bob may scan minutes later.
+        source.setAppForeground(false)
+        source.timeSource += (FriendPoller.BACKGROUND_INVITE_WINDOW_MS - 1).milliseconds
+        assertTrue(poller.isRapidPolling(), "rapid polling holds shortly after backgrounding")
+
+        // An hour later, with no call in between: the window ran from the transition.
+        source.timeSource += 1.hours
+        assertFalse(poller.isRapidPolling(), "a sheet left open in the background must not pin rapid polling")
+
+        // Foreground and back out again re-arms a fresh window.
+        source.setAppForeground(true)
+        assertTrue(poller.isRapidPolling())
+        source.setAppForeground(false)
+        assertTrue(poller.isRapidPolling(), "backgrounding again starts a fresh window")
+    }
+
+    @Test
     fun isRapidPolling_trueWhenNamingScannedQr() {
+        source.setAppForeground(true)
         ui.onPendingQrForNaming(mockk<QrPayload>(relaxed = true))
         assertTrue(poller.isRapidPolling())
     }
@@ -354,31 +359,6 @@ class FriendPollerTest {
         shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
         assertTrue(app.hasLocationPermission())
     }
-
-    @Test
-    fun pollersSharingAGate_serializeAndShareCleanupThrottle() =
-        runTest {
-            val gate = PollGate()
-            val a = FriendPoller(client, manager, userStore, source, ui, clock = { now }, gate = gate)
-            val b = FriendPoller(client, manager, userStore, source, ui, clock = { now }, gate = gate)
-
-            a.poll()
-            b.poll()
-
-            coVerify(exactly = 1) { manager.cleanupExpiredInvites() }
-        }
-
-    @Test
-    fun pollersWithSeparateGates_doNotShareState() =
-        runTest {
-            val a = FriendPoller(client, manager, userStore, source, ui, clock = { now }, gate = PollGate())
-            val b = FriendPoller(client, manager, userStore, source, ui, clock = { now }, gate = PollGate())
-
-            a.poll()
-            b.poll()
-
-            coVerify(exactly = 2) { manager.cleanupExpiredInvites() }
-        }
 
     @Test
     fun poll_treatsSharingAsOffWithoutPermission() =

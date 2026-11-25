@@ -26,7 +26,6 @@
     <string name="h_ago">%d 小时前</string>
     <string name="d_ago">%d 天前</string>
     <string name="stale_friend_warning">最近没有看到该朋友 — 出于安全考虑已暂停共享</string>
-    <string name="decryption_error_warning">安全错误 — 无法解密此朋友的消息</string>
     <string name="rename">重命名</string>
     <string name="resume">继续</string>
     <string name="pause">暂停</string>

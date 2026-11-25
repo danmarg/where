@@ -31,12 +31,14 @@ class StopRetryTest {
         var failing = false
         var timingOut = false
         var gate: CompletableDeferred<Unit>? = null
+        var attempts = 0
 
         override suspend fun post(
             baseUrl: String,
             token: String,
             payload: MailboxPayload,
         ) {
+            attempts++
             gate?.await()
             check(!failing) { "injected post failure" }
             if (timingOut) throw WallClockTimeoutCancellationException()
@@ -80,6 +82,9 @@ class StopRetryTest {
         val result = requireNotNull(bobManager.processBatch(friend.id, friend.session.recvToken.toHex(), frames))
         return bobManager.listFriends().single() to result.decryptedLocations.map { it.lat }
     }
+
+    /** A poll has since come back empty (what a long gap needs before a friend counts as past retention). */
+    private suspend fun Pair.looked() = aliceManager.updatePollState(bobId, currentTimeSeconds(), true)
 
     private suspend fun Pair.stopOwed() = alice.isStopOwed(bobId)
 
@@ -328,5 +333,105 @@ class StopRetryTest {
             gate.complete(Unit)
             stop.join()
             assertNotNull(p.bobReads().first.stoppedAtTs)
+        }
+
+    @Test
+    fun `an owed stop survives a client restart`() =
+        runTest {
+            val p = paired()
+            p.failedStop()
+            assertTrue(p.stopOwed())
+
+            // A new client over the same store, as after the app is killed.
+            val restarted = LocationClient("http://localhost", p.aliceManager, p.gated)
+            assertTrue(restarted.isStopOwed(p.bobId))
+            restarted.poll(pausedFriendIds = setOf(p.bobId))
+
+            assertFalse(restarted.isStopOwed(p.bobId))
+            assertNotNull(p.bobReads().first.stoppedAtTs)
+            // Queued, so a further restart owes nothing.
+            assertFalse(LocationClient("http://localhost", p.aliceManager, p.gated).isStopOwed(p.bobId))
+        }
+
+    @Test
+    fun `no stop is sent to a friend silent past retention`() =
+        runTest {
+            val p = paired()
+            p.alice.sendLocation(1.0, 1.0)
+            clock.advanceSeconds(MAILBOX_RETENTION_SECONDS + 1)
+            p.looked()
+            val posts = p.gated.attempts
+
+            p.alice.sendStoppedSharing()
+            p.alice.sendStoppedSharingToFriend(p.bobId)
+
+            assertFalse(p.stopOwed())
+            assertEquals(posts, p.gated.attempts)
+            assertTrue(p.aliceManager.getOutbox(p.bobId).isEmpty())
+        }
+
+    @Test
+    fun `an owed stop is dropped once the friend is silent past retention`() =
+        runTest {
+            val p = paired()
+            p.failedStop()
+            clock.advanceSeconds(MAILBOX_RETENTION_SECONDS + 1)
+            p.looked()
+            assertTrue(p.stopOwed())
+
+            p.alice.poll(pausedFriendIds = setOf(p.bobId))
+
+            assertFalse(p.stopOwed())
+            assertNull(p.bobReads().first.stoppedAtTs)
+        }
+
+    @Test
+    fun `a long offline gap alone does not drop a stop before a poll has looked`() =
+        runTest {
+            val p = paired()
+            p.failedStop()
+            clock.advanceSeconds(MAILBOX_RETENTION_SECONDS + 1)
+
+            assertTrue(p.stopOwed())
+            p.alice.poll(pausedFriendIds = setOf(p.bobId))
+
+            assertFalse(p.stopOwed())
+            assertNotNull(p.bobReads().first.stoppedAtTs)
+        }
+
+    @Test
+    fun `removing a friend silent past retention sends no farewell`() =
+        runTest {
+            val p = paired()
+            clock.advanceSeconds(MAILBOX_RETENTION_SECONDS + 1)
+            p.looked()
+            p.alice.removeFriend(p.bobId)
+            assertTrue(p.aliceManager.getOrphanedOutbox().isEmpty())
+        }
+
+    @Test
+    fun `a rejected orphan farewell backs off instead of retrying every poll`() =
+        runTest {
+            val p = paired()
+            p.gated.failing = true
+            p.alice.removeFriend(p.bobId)
+            val before = p.gated.attempts
+
+            // The first 3 failures retry at once (a brief outage), then it backs off.
+            repeat(10) { p.alice.processOrphanedOutboxes() }
+            assertEquals(before + 4, p.gated.attempts)
+
+            clock.advanceSeconds(61)
+            p.alice.processOrphanedOutboxes()
+            assertEquals(before + 5, p.gated.attempts)
+            // The wait doubled.
+            clock.advanceSeconds(61)
+            p.alice.processOrphanedOutboxes()
+            assertEquals(before + 5, p.gated.attempts)
+
+            p.gated.failing = false
+            clock.advanceSeconds(120)
+            p.alice.processOrphanedOutboxes()
+            assertTrue(p.aliceManager.getOrphanedOutbox().isEmpty())
         }
 }

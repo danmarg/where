@@ -4,6 +4,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.get
+import io.ktor.client.statement.HttpResponse
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
@@ -18,10 +19,13 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.routing.delete
 import io.ktor.utils.io.readRemaining
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.io.readByteArray
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -30,6 +34,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import net.af0.where.e2ee.EncryptedMessagePayload
+import net.af0.where.e2ee.MAILBOX_PAGE_LIMIT
 import net.af0.where.e2ee.MAILBOX_RETENTION_SECONDS
 import org.slf4j.LoggerFactory
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
@@ -88,7 +94,7 @@ private const val MAX_BODY_BYTES = 4 * 1024
 private const val POLL_BASELINE_LATENCY_MS = 50L
 
 /** How long an unread message is kept: long enough for a device to be away that long (§10.2). */
-private const val MAILBOX_TTL_MS = MAILBOX_RETENTION_SECONDS * 1000L
+internal const val MAILBOX_TTL_MS = MAILBOX_RETENTION_SECONDS * 1000L
 
 /**
  * How long a message's dedup record is kept: only long enough for retries, since these records
@@ -97,22 +103,26 @@ private const val MAILBOX_TTL_MS = MAILBOX_RETENTION_SECONDS * 1000L
 private const val RECEIVED_IDS_TTL_MS = 7 * 24 * 60 * 60 * 1000L
 
 /**
- * How long an unread KeyExchangeInit is kept. It only matters while its invite is valid (48 h),
- * so there's no reason to hold a scanner's key and name for [MAILBOX_TTL_MS].
+ * How long an unread message other than a session frame is kept. A KeyExchangeInit only matters
+ * while its invite is valid (48 h), so there's no reason to hold a scanner's key and name for
+ * [MAILBOX_TTL_MS]; any other type (or junk) gets no more than that either.
  */
-private const val KEY_EXCHANGE_INIT_TTL_MS = 7 * 24 * 60 * 60 * 1000L
+internal const val SHORT_MESSAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000L
 
-/** The TTL for [payload]: a session frame is kept for the retention, a pairing message shorter. */
-private fun messageTtlMs(payload: JsonElement): Long {
-    val type = ((payload as? JsonObject)?.get("type") as? JsonPrimitive)?.content
-    return if (type == "KeyExchangeInit") KEY_EXCHANGE_INIT_TTL_MS else MAILBOX_TTL_MS
+/** The wire `type` of a session frame, the only payload kept for [MAILBOX_TTL_MS]. */
+internal val SESSION_FRAME_TYPE = EncryptedMessagePayload.serializer().descriptor.serialName
+
+/** The TTL for [payload]: a session frame is kept for the retention, anything else shorter. */
+internal fun messageTtlMs(payload: JsonElement): Long {
+    val type = ((payload as? JsonObject)?.get("type") as? JsonPrimitive)?.takeIf { it.isString }?.content
+    return if (type == SESSION_FRAME_TYPE) MAILBOX_TTL_MS else SHORT_MESSAGE_TTL_MS
 }
 
 /** Maximum messages retained per token. Prevents unbounded memory growth from floods. */
 private const val MAX_QUEUE_DEPTH = 10000
 
 /** Maximum messages returned in a single poll request. */
-private const val MAX_MESSAGES_PER_POLL = 50
+private const val MAX_MESSAGES_PER_POLL = MAILBOX_PAGE_LIMIT
 
 /** Maximum POST requests per token within the rate-limit window.
  * Increased 10x to accommodate WAL retry bursts during reconnects (e.g. 20 friends x 50 retries).
@@ -351,10 +361,14 @@ class InMemoryMailboxState(
         limiter.evict(rateLimitWindowMs)
 
         val now = clock()
-        mailboxes.forEach { (token, _) ->
-            mailboxes.computeIfPresent(token) { _, q ->
-                q.removeIf { it.expiresAt <= now }
-                if (q.isEmpty()) null else q
+        // Under the token's lock: post() adds to the queue it got from the map while holding it,
+        // so removing an emptied queue unlocked could drop a message post() just answered true for.
+        mailboxes.keys.forEach { token ->
+            synchronized(getLock(token)) {
+                mailboxes.computeIfPresent(token) { _, q ->
+                    q.removeIf { it.expiresAt <= now }
+                    if (q.isEmpty()) null else q
+                }
             }
         }
 
@@ -418,7 +432,7 @@ fun createDynamoDbClient(
  */
 internal object CompactPayload {
     private val KEYS = listOf("type", "v", "envelope", "ct", "msgId")
-    private const val TYPE = "EncryptedMessage"
+    private val TYPE = SESSION_FRAME_TYPE
     private val UNSIGNED_INT = Regex("0|[1-9][0-9]*")
     private val ATTRIBUTES = setOf("v", "e", "c")
 
@@ -521,6 +535,24 @@ class DynamoMailboxState(
     private val locks = StripedLocks()
     private val depthCounts = ConcurrentHashMap<String, CachedDepth>()
 
+    /**
+     * Per-token state behind drain()'s negative cache. [gen] is a unique id issued at each post() write (before
+     * and after each), [lastPostAt] is the clock at the last bump, and [emptyAt] is the clock
+     * when a drain query that came back empty started (null: none cached).
+     */
+    private data class EmptyPollState(val gen: Long, val lastPostAt: Long, val emptyAt: Long?)
+
+    private val emptyPolls = ConcurrentHashMap<String, EmptyPollState>()
+
+    // Generations come from one counter shared by all tokens and never reused, so an entry evicted
+    // and recreated can never match the generation a drain read before the eviction.
+    private val nextPollGen = java.util.concurrent.atomic.AtomicLong()
+
+    private fun noteWrite(token: String) {
+        val now = clock()
+        emptyPolls.compute(token) { _, _ -> EmptyPollState(nextPollGen.incrementAndGet(), now, null) }
+    }
+
     /** A token's live message count, and when it was last counted from the table (ms). */
     private data class CachedDepth(val count: Int, val countedAt: Long)
 
@@ -617,6 +649,12 @@ class DynamoMailboxState(
         const val MAX_BATCH_RETRIES = 8
         const val MAX_DEPTH_CACHE_ENTRIES = 50_000
 
+        // drain()'s negative cache: an empty result is trusted this long, and not recorded within
+        // the quiet period after a post (GSI reads are eventually consistent).
+        const val EMPTY_POLL_MAX_AGE_MS = 60_000L
+        const val EMPTY_POLL_QUIET_MS = 5_000L
+        const val EMPTY_POLL_STATE_IDLE_MS = 10 * 60_000L
+
         // A cached depth is re-counted from the table once it's this old, so rows the TTL sweep
         // deleted (which never decrement it) stop counting against MAX_QUEUE_DEPTH.
         const val DEPTH_CACHE_RESEED_MS = 24 * 60 * 60 * 1000L
@@ -660,7 +698,15 @@ class DynamoMailboxState(
             // HTTP layer's 429 response implicitly invites) still has a real message to enqueue,
             // rather than being silently swallowed by a dedup entry from the failed attempt.
             val depth = currentDepth(token, now)
-            if (depth >= MAX_QUEUE_DEPTH) return false
+            if (depth >= MAX_QUEUE_DEPTH) {
+                // A retry of a message still queued (its dedup record expired first) is a no-op,
+                // not a 429, like InMemoryMailboxState: restore the record and report success.
+                if (msgId != null && isQueued(token, msgId, now)) {
+                    putReceivedId(token, msgId, receivedIdExpiresAt)
+                    return true
+                }
+                return false
+            }
 
             val messageItem =
                 mapOf(
@@ -681,6 +727,7 @@ class DynamoMailboxState(
             // after a landed attempt), and its retry won't increment for that row (deduped above,
             // or the message put below finds the row), so the cached count would stay one short.
             // Drop it; the next post re-counts exactly.
+            noteWrite(token)
             try {
                 if (msgId != null) {
                     // Two plain PutItems rather than one TransactWriteItems: a transaction bills every
@@ -692,8 +739,8 @@ class DynamoMailboxState(
                     // already acked the row, the retry re-inserts it and the recipient's ratchet
                     // classifies the second copy as a replay and drops it.
                     //
-                    // A retry whose orphaned row is still queued counts toward the depth check above,
-                    // so on a full queue it gets a 429 rather than a no-op; it succeeds once space frees.
+                    // A retry whose orphaned row is still queued counts toward the depth check above;
+                    // on a full queue it is recognized as queued there and the record is restored.
                     val inserted =
                         try {
                             client.putItem(
@@ -717,18 +764,7 @@ class DynamoMailboxState(
                             depthCounts.remove(token)
                             false
                         }
-                    client.putItem(
-                        PutItemRequest.builder()
-                            .tableName(receivedIdsTable)
-                            .item(
-                                mapOf(
-                                    "token" to AttributeValue.fromS(token),
-                                    "msgId" to AttributeValue.fromS(msgId),
-                                    "expiresAt" to AttributeValue.fromN(receivedIdExpiresAt.toString()),
-                                ),
-                            )
-                            .build(),
-                    )
+                    putReceivedId(token, msgId, receivedIdExpiresAt)
                     if (!inserted) return true
                 } else {
                     client.putItem(PutItemRequest.builder().tableName(messagesTable).item(messageItem).build())
@@ -736,10 +772,50 @@ class DynamoMailboxState(
             } catch (e: Throwable) {
                 depthCounts.remove(token)
                 throw e
+            } finally {
+                // After the write (committed or not), so a drain that began before it can't cache
+                // its empty result over the new row.
+                noteWrite(token)
             }
             depthCounts.computeIfPresent(token) { _, cached -> cached.copy(count = depth + 1) }
             return true
         }
+    }
+
+    private fun putReceivedId(
+        token: String,
+        msgId: String,
+        expiresAtSec: Long,
+    ) {
+        client.putItem(
+            PutItemRequest.builder()
+                .tableName(receivedIdsTable)
+                .item(
+                    mapOf(
+                        "token" to AttributeValue.fromS(token),
+                        "msgId" to AttributeValue.fromS(msgId),
+                        "expiresAt" to AttributeValue.fromN(expiresAtSec.toString()),
+                    ),
+                )
+                .build(),
+        )
+    }
+
+    /** Whether [token] holds a live message row for [msgId] (strongly consistent). */
+    private fun isQueued(
+        token: String,
+        msgId: String,
+        now: Long,
+    ): Boolean {
+        val response =
+            client.getItem(
+                GetItemRequest.builder()
+                    .tableName(messagesTable)
+                    .key(mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS(msgId)))
+                    .consistentRead(true)
+                    .build(),
+            )
+        return response.hasItem() && (response.item()["expiresAt"]?.n()?.toLongOrNull() ?: Long.MIN_VALUE) > now / 1000
     }
 
     /**
@@ -776,7 +852,9 @@ class DynamoMailboxState(
         val cached = depthCounts[token]
         if (cached != null && now - cached.countedAt < DEPTH_CACHE_RESEED_MS) return cached.count
         val count = queryLiveDepth(token, now)
-        depthCounts[token] = CachedDepth(count, now)
+        // Entries at 0 are kept, so the cache is bounded here as well as by evict(): past twice
+        // the cap a token is simply re-counted on its next post instead of being cached.
+        if (cached != null || depthCounts.size < 2 * MAX_DEPTH_CACHE_ENTRIES) depthCounts[token] = CachedDepth(count, now)
         return count
     }
 
@@ -803,6 +881,9 @@ class DynamoMailboxState(
                             ),
                         )
                         .select(Select.COUNT)
+                        // Strongly consistent: an eventually consistent count can miss a row just
+                        // written, undercounting and letting the queue pass MAX_QUEUE_DEPTH.
+                        .consistentRead(true)
                         .exclusiveStartKey(lastKey)
                         .build(),
                 )
@@ -812,16 +893,20 @@ class DynamoMailboxState(
         return count
     }
 
+    // A row with no (or unparsable) expiresAt is not live, matching the `expiresAt > :now` filter
+    // that depth counts and drain() use: it was never counted, so deleting it frees no slot.
     private fun isLive(item: Map<String, AttributeValue>): Boolean =
-        (item["expiresAt"]?.n()?.toLongOrNull() ?: Long.MAX_VALUE) > clock() / 1000
+        (item["expiresAt"]?.n()?.toLongOrNull() ?: Long.MIN_VALUE) > clock() / 1000
 
     // Must be called while holding getLock(token) - see currentDepth()'s doc.
     private fun decrementDepth(
         token: String,
         by: Int,
     ) {
+        // Reaching exactly 0 keeps the entry (the next post needs no COUNT query); freeing more
+        // than the cache thought was queued means it was wrong, so drop it to be re-counted.
         depthCounts.computeIfPresent(token) { _, cached ->
-            (cached.count - by).takeIf { it > 0 }?.let { cached.copy(count = it) }
+            (cached.count - by).takeIf { it >= 0 }?.let { cached.copy(count = it) }
         }
     }
 
@@ -836,8 +921,18 @@ class DynamoMailboxState(
      */
     override fun drain(token: String): List<JsonElement>? {
         if (!limiter.checkGet(token)) return null
-        val now = clock() / 1000
+        val startMs = clock()
+        val before = emptyPolls[token]
+        // Negative cache: the only way a row appears is post() on this one JVM, which resets this
+        // state (see EmptyPollState), and rows only ever leave a queue, so an empty result stays
+        // empty until the next post. Capped at EMPTY_POLL_MAX_AGE_MS in case that ever stops holding
+        // (e.g. a second machine during a deploy overlap).
+        before?.emptyAt?.let { if (startMs - it in 0 until EMPTY_POLL_MAX_AGE_MS) return emptyList() }
+        val now = startMs / 1000
         val messages = mutableListOf<JsonElement>()
+        var badCompact = 0
+        var badPayload = 0
+        val corrupt = mutableMapOf<String, String>() // msgId -> the payload string observed
         var lastKey: Map<String, AttributeValue>? = null
         do {
             val response =
@@ -860,14 +955,19 @@ class DynamoMailboxState(
                         .build(),
                 )
             for (item in response.items()) {
+                val compact = CompactPayload.isCompact(item)
                 val message =
-                    if (CompactPayload.isCompact(item)) {
+                    if (compact) {
                         CompactPayload.decode(item)
                     } else {
                         item["payload"]?.s()?.let { runCatching { json.parseToJsonElement(it) }.getOrNull() }
                     }
                 if (message == null) {
-                    auditLog.warn("Skipping malformed mailbox item (msgId={})", item["msgId"]?.s())
+                    // Only a legacy JSON payload that doesn't parse is corrupt whatever the version.
+                    // A compact item or one with no payload may be a newer layout this binary can't
+                    // read (e.g. after a rollback): skipped, never deleted.
+                    if (!compact) item["payload"]?.s()?.let { p -> item["msgId"]?.s()?.let { corrupt[it] = p } }
+                    if (compact) badCompact++ else badPayload++
                 } else if (messages.size < MAX_MESSAGES_PER_POLL) {
                     messages.add(message)
                 }
@@ -875,7 +975,68 @@ class DynamoMailboxState(
             lastKey = response.lastEvaluatedKey().takeIf { it.isNotEmpty() }
         } while (lastKey != null && messages.size < MAX_MESSAGES_PER_POLL)
 
+        // A corrupt payload would be re-skipped every poll and keep counting toward the depth cap
+        // until its TTL, so remove it. Best effort: a failed delete must not fail the poll.
+        if (corrupt.isNotEmpty()) {
+            try {
+                withDepthLock(token) {
+                    corrupt.forEach { (badId, badPayload) ->
+                        // Only the row drain() saw: if it was acked and replaced meanwhile, leave it.
+                        val deleted =
+                            try {
+                                client.deleteItem(
+                                    DeleteItemRequest.builder()
+                                        .tableName(messagesTable)
+                                        .key(mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS(badId)))
+                                        .conditionExpression("payload = :p")
+                                        .expressionAttributeValues(mapOf(":p" to AttributeValue.fromS(badPayload)))
+                                        .returnValues(ReturnValue.ALL_OLD)
+                                        .build(),
+                                )
+                            } catch (e: ConditionalCheckFailedException) {
+                                null
+                            }
+                        if (deleted != null && deleted.hasAttributes() && isLive(deleted.attributes())) decrementDepth(token, 1)
+                    }
+                }
+            } catch (e: Exception) {
+                auditLog.warn("Could not remove malformed mailbox items: {}", e.javaClass.simpleName)
+            }
+        }
+
+        // One line per poll, counts only: never the token or a msgId (stable identifiers; see redactPath).
+        if (badCompact + badPayload > 0) {
+            auditLog.warn(
+                "Skipped {} malformed mailbox items (compact={}, payload={})",
+                badCompact + badPayload,
+                badCompact,
+                badPayload,
+            )
+        }
+        if (messages.isEmpty() && badCompact + badPayload == 0) cacheEmptyPoll(token, before, startMs)
         return messages
+    }
+
+    /**
+     * Records that the drain query started at [startMs] found nothing, unless a post to [token]
+     * may be racing it: [before] is the state read before the query, and the entry is only written
+     * if no post bumped it since. Also skipped for [EMPTY_POLL_QUIET_MS] after a post, because the
+     * index is eventually consistent and may not show a just-written row yet.
+     */
+    private fun cacheEmptyPoll(
+        token: String,
+        before: EmptyPollState?,
+        startMs: Long,
+    ) {
+        if (before != null && startMs - before.lastPostAt < EMPTY_POLL_QUIET_MS) return
+        if (before == null && emptyPolls.size >= 2 * MAX_DEPTH_CACHE_ENTRIES) return
+        emptyPolls.compute(token) { _, cur ->
+            if ((cur?.gen ?: 0L) == (before?.gen ?: 0L)) {
+                EmptyPollState(cur?.gen ?: 0L, cur?.lastPostAt ?: Long.MIN_VALUE / 2, startMs)
+            } else {
+                cur
+            }
+        }
     }
 
     override fun deleteById(
@@ -916,7 +1077,11 @@ class DynamoMailboxState(
         val ids = msgIds.distinct()
         withDepthLock(token) {
             var existingCount = 0
-            ids.chunked(100).forEach { chunk ->
+            // The existence check only feeds decrementDepth(), which does nothing for a token with
+            // no cached entry, or one cached at 0 (nothing live to free; the cache only ever
+            // overcounts). Skip the BatchGetItem then: usually a retried ack or one after a restart.
+            val needsCount = (depthCounts[token]?.count ?: 0) > 0
+            (if (needsCount) ids else emptyList()).chunked(100).forEach { chunk ->
                 var keysToCheck =
                     chunk.map { msgId ->
                         mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS(msgId))
@@ -1015,6 +1180,11 @@ class DynamoMailboxState(
         if (depthCounts.size > MAX_DEPTH_CACHE_ENTRIES) {
             for (token in depthCounts.keys) synchronized(getLock(token)) { depthCounts.remove(token) }
         }
+        // Drop idle poll state. Only entries whose last post is long past: removing one that a
+        // concurrent drain is about to compare against would reset its generation, so keep any
+        // that a post touched recently.
+        val cutoff = clock() - EMPTY_POLL_STATE_IDLE_MS
+        emptyPolls.entries.removeIf { (_, st) -> st.lastPostAt < cutoff && (st.emptyAt ?: Long.MIN_VALUE) < cutoff }
     }
 
     override fun close() {
@@ -1052,6 +1222,10 @@ data class ServerState(
     val trustProxy: Boolean = System.getenv("TRUST_PROXY")?.toBoolean() ?: false,
     val debug: Boolean = false,
     val healthcheckPingUrl: String? = null,
+    /** Loopback URL of this server's own /health; the dead-man's-switch pings only if it answers 2xx. */
+    val selfHealthUrl: String? = null,
+    /** Where blocking store calls run (never the Netty event loop); injectable so tests can tell. */
+    val storeDispatcher: CoroutineDispatcher = Dispatchers.IO,
 )
 
 /**
@@ -1062,6 +1236,52 @@ data class ServerState(
  * while a real sustained outage (crash loop, hung process) is still caught within a few minutes.
  */
 private const val HEALTHCHECK_PING_INTERVAL_MS = 60_000L
+
+/** Lets Netty bind before the first self /health check, which would otherwise always fail at startup. */
+private const val HEALTHCHECK_INITIAL_DELAY_MS = 5_000L
+
+/**
+ * One dead-man's-switch round: if [selfHealthUrl] is set, first GET it (through the real HTTP
+ * stack, proving the server is serving) and skip the ping unless it answers 2xx; then GET
+ * [pingUrl] and treat a non-2xx answer as a failure. Returns whether the ping was delivered.
+ * Logs only exception types / status codes: client exception messages embed the request URL,
+ * and the ping URL is itself a secret.
+ */
+internal suspend fun pingHealthcheck(
+    client: HttpClient,
+    selfHealthUrl: String?,
+    pingUrl: String,
+): Boolean {
+    if (selfHealthUrl != null) {
+        val self = runCatchingCooperative { client.get(selfHealthUrl) }
+        val selfOk = self.getOrNull()?.isSuccess() == true
+        if (!selfOk) {
+            auditLog.warn("Self health check failed (${self.describeFailure()}); skipping Healthchecks.io ping")
+            return false
+        }
+    }
+    val ping = runCatchingCooperative { client.get(pingUrl) }
+    if (ping.getOrNull()?.isSuccess() != true) {
+        auditLog.warn("Healthchecks.io ping failed (${ping.describeFailure()})")
+        return false
+    }
+    return true
+}
+
+/** [runCatching] that lets coroutine cancellation propagate instead of swallowing it. */
+private inline fun <T> runCatchingCooperative(block: () -> T): Result<T> =
+    try {
+        Result.success(block())
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        Result.failure(e)
+    }
+
+private fun HttpResponse.isSuccess(): Boolean = status.value in 200..299
+
+private fun Result<HttpResponse>.describeFailure(): String =
+    exceptionOrNull()?.let { it::class.simpleName } ?: "HTTP ${getOrNull()?.status?.value}"
 
 fun main() {
     val port = System.getenv("PORT")?.toInt() ?: 8080
@@ -1089,7 +1309,12 @@ fun main() {
     if (healthcheckPingUrl == null) {
         auditLog.warn("HEALTHCHECK_PING_URL not set; no external uptime monitoring configured")
     }
-    val state = ServerState(mailbox = mailbox, healthcheckPingUrl = healthcheckPingUrl)
+    val state =
+        ServerState(
+            mailbox = mailbox,
+            healthcheckPingUrl = healthcheckPingUrl,
+            selfHealthUrl = "http://127.0.0.1:$port/health",
+        )
 
     embeddedServer(Netty, port = port, host = "0.0.0.0") {
         module(state)
@@ -1121,7 +1346,7 @@ fun Application.module(state: ServerState = ServerState()) {
     launch(Dispatchers.Default) {
         while (isActive) {
             delay(RATE_LIMIT_WINDOW_MS)
-            state.mailbox.evict()
+            withContext(state.storeDispatcher) { state.mailbox.evict() }
         }
     }
 
@@ -1135,11 +1360,9 @@ fun Application.module(state: ServerState = ServerState()) {
             }
         monitor.subscribe(ApplicationStopped) { healthcheckClient.close() }
         launch(Dispatchers.Default) {
+            delay(HEALTHCHECK_INITIAL_DELAY_MS)
             while (isActive) {
-                runCatching { healthcheckClient.get(state.healthcheckPingUrl) }
-                    // Log only the exception type: Ktor client exception messages embed the
-                    // request URL, and the ping URL is itself a secret.
-                    .onFailure { auditLog.warn("Healthchecks.io ping failed: ${it::class.simpleName}") }
+                pingHealthcheck(healthcheckClient, state.selfHealthUrl, state.healthcheckPingUrl)
                 delay(HEALTHCHECK_PING_INTERVAL_MS)
             }
         }
@@ -1176,7 +1399,8 @@ fun Application.module(state: ServerState = ServerState()) {
             if (payload !is JsonObject || !payload.containsKey("type")) {
                 return@put call.respond(HttpStatusCode.BadRequest)
             }
-            if (!state.mailbox.post(token, payload, msgId)) return@put call.respond(HttpStatusCode.TooManyRequests)
+            val accepted = withContext(state.storeDispatcher) { state.mailbox.post(token, payload, msgId) }
+            if (!accepted) return@put call.respond(HttpStatusCode.TooManyRequests)
             call.respond(HttpStatusCode.NoContent)
         }
 
@@ -1188,7 +1412,9 @@ fun Application.module(state: ServerState = ServerState()) {
                 return@get call.respond(HttpStatusCode.TooManyRequests)
             }
             val startTime = System.currentTimeMillis()
-            val messages = state.mailbox.drain(token) ?: return@get call.respond(HttpStatusCode.TooManyRequests)
+            val messages =
+                withContext(state.storeDispatcher) { state.mailbox.drain(token) }
+                    ?: return@get call.respond(HttpStatusCode.TooManyRequests)
             val responseString = json.encodeToString(messages)
             val elapsed = System.currentTimeMillis() - startTime
             if (!state.debug && elapsed < POLL_BASELINE_LATENCY_MS) delay(POLL_BASELINE_LATENCY_MS - elapsed)
@@ -1206,7 +1432,7 @@ fun Application.module(state: ServerState = ServerState()) {
             if (!state.mailbox.checkIpRateLimit(call.clientIp(state.trustProxy), RequestKind.DELETE)) {
                 return@delete call.respond(HttpStatusCode.TooManyRequests)
             }
-            state.mailbox.deleteByIds(token, ids)
+            withContext(state.storeDispatcher) { state.mailbox.deleteByIds(token, ids) }
             call.respond(HttpStatusCode.NoContent)
         }
 
@@ -1219,7 +1445,7 @@ fun Application.module(state: ServerState = ServerState()) {
             if (!state.mailbox.checkIpRateLimit(call.clientIp(state.trustProxy), RequestKind.DELETE)) {
                 return@delete call.respond(HttpStatusCode.TooManyRequests)
             }
-            state.mailbox.deleteById(token, msgId)
+            withContext(state.storeDispatcher) { state.mailbox.deleteById(token, msgId) }
             call.respond(HttpStatusCode.NoContent)
         }
     }

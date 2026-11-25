@@ -27,6 +27,7 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -61,6 +62,7 @@ class FdroidLocationCallbackTest {
     fun tearDown() {
         io.mockk.unmockkAll()
         Dispatchers.resetMain()
+        LocationService.elapsedClock = { android.os.SystemClock.elapsedRealtime() }
     }
 
     @Test
@@ -76,7 +78,7 @@ class FdroidLocationCallbackTest {
 
             val app = context as TestWhereApplication
             app.userStore.setSharing(true)
-            LocationService.clock = { System.currentTimeMillis() }
+            LocationService.elapsedClock = { 5_000L }
 
             val controller = Robolectric.buildService(LocationService::class.java)
             val service = controller.get()
@@ -89,7 +91,7 @@ class FdroidLocationCallbackTest {
             advanceUntilIdle()
 
             assertTrue(service.isRegistered, "Service should register with GPS when a friend is present")
-            assertEquals(0L, service.lastLocationCallbackTime, "No callback fired yet")
+            assertNull(service.lastLocationCallbackTime, "No callback fired yet")
 
             // Simulate a GPS fix arriving from the system LocationManager.
             val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
@@ -107,7 +109,7 @@ class FdroidLocationCallbackTest {
             shadowOf(Looper.getMainLooper()).idle()
             advanceUntilIdle()
 
-            assertTrue(service.lastLocationCallbackTime > 0L, "lastLocationCallbackTime must be stamped on callback")
+            assertEquals(5_000L, service.lastLocationCallbackTime, "lastLocationCallbackTime must be stamped on callback")
 
             val loc = fakeLocationSource.lastLocation.value
             assertNotNull(loc, "LocationSource must have a location after the fix")

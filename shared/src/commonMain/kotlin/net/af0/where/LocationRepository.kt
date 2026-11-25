@@ -5,9 +5,12 @@ import dev.icerock.moko.resources.desc.Resource
 import dev.icerock.moko.resources.desc.ResourceFormatted
 import dev.icerock.moko.resources.desc.StringDesc
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.FriendEntry
@@ -17,6 +20,8 @@ import net.af0.where.e2ee.PendingInviteView
 import net.af0.where.e2ee.UserStore
 import net.af0.where.model.UserLocation
 import net.af0.where.shared.MR
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 
 /** Minimal interface over the shared location state, making it injectable for tests. */
 interface LocationSource {
@@ -25,6 +30,12 @@ interface LocationSource {
     val friendLastPing: StateFlow<Map<String, Long>>
     val connectionStatus: StateFlow<ConnectionStatus>
     val isAppInForeground: StateFlow<Boolean>
+
+    /** How many times [isAppInForeground] has turned true: shows a visit that has already ended. */
+    val foregroundEntries: StateFlow<Int>
+
+    /** Monotonic mark of when [isAppInForeground] last turned false; null while visible or never visible. */
+    val appBackgroundedAt: StateFlow<TimeMark?>
     val pendingInitPayload: StateFlow<KeyExchangeInitPayload?>
 
     /** Wall-clock time [pendingInitPayload] was last set to a non-null value; 0 when null. */
@@ -91,6 +102,7 @@ interface LocationSource {
  */
 class LocationRepository(
     private val userStore: UserStore,
+    private val timeSource: TimeSource.WithComparableMarks = TimeSource.Monotonic,
 ) : LocationSource {
     private val _lastLocation = MutableStateFlow<Triple<Double, Double, Double?>?>(null)
     override val lastLocation: StateFlow<Triple<Double, Double, Double?>?> = _lastLocation.asStateFlow()
@@ -107,6 +119,12 @@ class LocationRepository(
     private val _isAppInForeground = MutableStateFlow(false)
     override val isAppInForeground: StateFlow<Boolean> = _isAppInForeground.asStateFlow()
 
+    private val _foregroundEntries = MutableStateFlow(0)
+    override val foregroundEntries: StateFlow<Int> = _foregroundEntries.asStateFlow()
+
+    private val _appBackgroundedAt = MutableStateFlow<TimeMark?>(null)
+    override val appBackgroundedAt: StateFlow<TimeMark?> = _appBackgroundedAt.asStateFlow()
+
     private val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
     override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload.asStateFlow()
 
@@ -122,12 +140,27 @@ class LocationRepository(
     private val _allPendingInvites = MutableStateFlow<List<PendingInviteView>>(emptyList())
     override val allPendingInvites: StateFlow<List<PendingInviteView>> = _allPendingInvites.asStateFlow()
 
-    private val awaitingFirstUpdateIds = mutableSetOf<String>()
+    // The rapid-poll trigger and the friends still awaited live in one cell, so "removed the last
+    // awaited id -> clear the trigger" and a concurrent mark/trigger are each a single atomic update.
+    private data class RapidState(
+        val trigger: Long = 0L,
+        val awaiting: Set<String> = emptySet(),
+    )
+
+    private val rapidState = MutableStateFlow(RapidState())
 
     private val pollWakeSignal = Channel<Unit>(Channel.CONFLATED)
 
-    private val _lastRapidPollTrigger = MutableStateFlow(0L)
-    override val lastRapidPollTrigger: StateFlow<Long> = _lastRapidPollTrigger.asStateFlow()
+    override val lastRapidPollTrigger: StateFlow<Long> =
+        object : StateFlow<Long> {
+            override val value: Long get() = rapidState.value.trigger
+            override val replayCache: List<Long> get() = listOf(value)
+
+            override suspend fun collect(collector: FlowCollector<Long>): Nothing {
+                rapidState.map { it.trigger }.distinctUntilChanged().collect(collector)
+                error("unreachable")
+            }
+        }
 
     override fun onLocation(
         lat: Double,
@@ -179,7 +212,16 @@ class LocationRepository(
     }
 
     override fun setAppForeground(foreground: Boolean) {
-        _isAppInForeground.value = foreground
+        if (foreground && !_isAppInForeground.value) _foregroundEntries.update { it + 1 }
+        // Order so a concurrent reader never sees "not foreground, no mark": the mark goes up before
+        // the flag drops, and comes down after the flag is raised.
+        if (foreground) {
+            _isAppInForeground.value = true
+            _appBackgroundedAt.value = null
+        } else {
+            if (_isAppInForeground.value) _appBackgroundedAt.value = timeSource.markNow()
+            _isAppInForeground.value = false
+        }
     }
 
     override fun onPendingInit(
@@ -213,23 +255,26 @@ class LocationRepository(
     }
 
     override fun triggerRapidPoll() {
-        _lastRapidPollTrigger.value = net.af0.where.e2ee.currentTimeMillis()
+        val now = net.af0.where.e2ee.currentTimeMillis()
+        rapidState.update { it.copy(trigger = now) }
         pollWakeSignal.trySend(Unit)
     }
 
     override fun resetRapidPoll() {
-        _lastRapidPollTrigger.value = 0L
-        awaitingFirstUpdateIds.clear()
+        rapidState.value = RapidState()
     }
 
     override fun markAwaitingFirstUpdate(friendId: String) {
-        awaitingFirstUpdateIds.add(friendId)
+        rapidState.update { it.copy(awaiting = it.awaiting + friendId) }
     }
 
     override fun onFriendLocationReceived(friendId: String) {
-        if (awaitingFirstUpdateIds.remove(friendId)) {
-            if (awaitingFirstUpdateIds.isEmpty()) {
-                resetRapidPoll()
+        rapidState.update { cur ->
+            if (friendId !in cur.awaiting) {
+                cur
+            } else {
+                val rest = cur.awaiting - friendId
+                if (rest.isEmpty()) RapidState() else cur.copy(awaiting = rest)
             }
         }
     }
@@ -251,12 +296,14 @@ class LocationRepository(
         _friendLastPing.value = emptyMap()
         _connectionStatus.value = ConnectionStatus.Ok
         _isAppInForeground.value = false
+        _foregroundEntries.value = 0
+        _appBackgroundedAt.value = null
         _pendingInitPayload.value = null
         _pendingInitPayloadSetAt.value = 0L
         _pendingInitAliceEkPub.value = null
         _friends.value = emptyList()
         _allPendingInvites.value = emptyList()
-        _lastRapidPollTrigger.value = 0L
+        rapidState.value = RapidState()
         while (pollWakeSignal.tryReceive().isSuccess) { /* drain */ }
     }
 }

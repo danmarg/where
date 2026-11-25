@@ -42,8 +42,6 @@ class FileRawKeyValueStorage(private val file: File) : RawKeyValueStorage {
     }
 }
 
-fun ByteArray.toHex(): String = joinToString("") { (it.toInt() and 0xFF).toString(16).padStart(2, '0') }
-
 fun String.hexToByteArray(): ByteArray {
     check(length % 2 == 0) { "hex string must have even length" }
     return ByteArray(length / 2) { i -> substring(i * 2, i * 2 + 2).toInt(16).toByte() }
@@ -177,7 +175,7 @@ fun main(args: Array<String>) {
                 println("Bob discovery token: $discoveryHex")
                 println("Bob ID: ${bobEntry.id}")
                 try {
-                    KtorMailboxClient.post(host, discoveryHex, initPayload)
+                    locationClient.postKeyExchangeInit(bobEntry.id, qr, initPayload)
                     println("Posted KeyExchangeInit to mailbox")
                     println("Joined ${qr.suggestedName} as $name")
                 } catch (e: Exception) {

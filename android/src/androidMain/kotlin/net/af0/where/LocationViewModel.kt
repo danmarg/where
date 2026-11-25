@@ -55,13 +55,12 @@ class LocationViewModel(
     e2eeManagerParam: E2eeManager? = null,
     userStoreParam: UserStore? = null,
     locationClientParam: LocationClient? = null,
-    startPolling: Boolean = true,
     private val clock: () -> Long = { System.currentTimeMillis() },
     locationSourceParam: LocationSource? = null,
     uiStateStoreParam: UiStateSource? = null,
 ) : AndroidViewModel(app) {
     // Secondary constructor for reflection-based instantiation in release builds.
-    constructor(app: Application) : this(app, null, null, null, true)
+    constructor(app: Application) : this(app, null, null, null)
 
     // Use the Application-level singletons so LocationService and this ViewModel share the same
     // E2EE state. Fall back to creating new instances when running under test (app is not
@@ -140,6 +139,27 @@ class LocationViewModel(
     private val _isExchanging = MutableStateFlow(false)
     val isExchanging: StateFlow<Boolean> = _isExchanging
 
+    // Exchanges in flight (confirmQrScan, confirmPendingInit); _isExchanging (the spinner) is true while any runs.
+    private var exchangesInFlight = 0
+
+    // Invites whose confirmQrScan is running: blocks a double tap of the same invite only.
+    private val confirmingInvites: MutableSet<QrPayload> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    private fun beginExchange() {
+        synchronized(this) {
+            exchangesInFlight++
+            _isExchanging.value = true
+        }
+    }
+
+    private fun endExchange() {
+        synchronized(this) {
+            if (exchangesInFlight == 0) Log.w(TAG, "endExchange: no exchange in flight")
+            exchangesInFlight = maxOf(0, exchangesInFlight - 1)
+            _isExchanging.value = exchangesInFlight > 0
+        }
+    }
+
     val connectionStatus: StateFlow<ConnectionStatus> = locationSource.connectionStatus
     val diagnosticLog: StateFlow<List<String>> = e2eeManager.diagnosticLog
 
@@ -172,9 +192,6 @@ class LocationViewModel(
 
     // Declared before init {}: viewModelScope runs on Main.immediate, so the init-block collectors
     // run during construction and can start the service before later properties are initialized.
-    @VisibleForTesting
-    internal var consumedInvites = ConsumedInvites(app.getSharedPreferences(ConsumedInvites.PREFS_NAME, Context.MODE_PRIVATE))
-
     @VisibleForTesting
     internal var serviceStarter: (Intent) -> Unit = { getApplication<Application>().startForegroundService(it) }
 
@@ -312,11 +329,7 @@ class LocationViewModel(
             // Symmetric to the stop fan-out: ask the service to broadcast our current location
             // to every (non-paused) friend immediately, so peers don't wait for the next
             // regular location tick (up to a heartbeat interval if stationary/backgrounded).
-            val intent =
-                Intent(getApplication(), LocationService::class.java).apply {
-                    action = LocationService.ACTION_FORCE_PUBLISH
-                }
-            startLocationService(intent)
+            forcePublish()
         }
     }
 
@@ -355,12 +368,7 @@ class LocationViewModel(
                 }
             }
         } else {
-            val intent =
-                Intent(getApplication(), LocationService::class.java).apply {
-                    action = LocationService.ACTION_FORCE_PUBLISH
-                    putExtra(LocationService.EXTRA_FRIEND_ID, id)
-                }
-            startLocationService(intent)
+            forcePublish(id)
         }
     }
 
@@ -456,10 +464,12 @@ class LocationViewModel(
         }
         // Idempotent per invite: accepting one pairs with fresh keys, so a redelivered or
         // re-opened link for an invite we already accepted must not pair a second time. The
-        // friend list covers every pairing that still exists (including ones from before
-        // consumedInvites existed); consumedInvites also covers a friend since removed.
-        // E2eeManager.processScannedQr enforces the friend-list check again under its lock.
-        if (consumedInvites.contains(qr) || friends.value.any { it.isFromInvite(qr) }) {
+        // friend list is the cheap early check; E2eeManager.processScannedQr enforces it again
+        // under its lock, together with the stored record of consumed invites (which also covers
+        // a friend since removed) and reports it as InviteAlreadyAcceptedException. Consumed
+        // records are not imported from the old SharedPreferences store: invites accepted before
+        // this upgrade are forgotten (at most 48 h of exposure, and the inviter has dropped them).
+        if (friends.value.any { it.isFromInvite(qr) }) {
             Log.w(TAG, "processQrUrl: invite already accepted")
             showInviteError(MR.strings.invite_already_used)
             return false
@@ -475,6 +485,24 @@ class LocationViewModel(
 
         uiStateStore.onPendingQrForNaming(qr)
         triggerRapidPoll()
+        // The stored record (a friend since removed) needs the database: check it right away and
+        // take the naming dialog back down if the invite was already used.
+        viewModelScope.launch {
+            val consumed =
+                try {
+                    e2eeManager.isInviteConsumed(qr)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    false
+                }
+            if (consumed && pendingQrForNaming.value == qr) {
+                Log.w(TAG, "processQrUrl: invite already accepted (consumed record)")
+                uiStateStore.onPendingQrForNaming(null)
+                locationSource.resetRapidPoll()
+                showInviteError(MR.strings.invite_already_used)
+            }
+        }
         return true
     }
 
@@ -487,17 +515,13 @@ class LocationViewModel(
         qr: QrPayload,
         friendName: String,
     ) {
+        // A second confirm of the same invite while the first runs (a double tap) is ignored before
+        // it can touch UI state; the first keeps the spinner. Other exchanges don't block this one.
+        // It may run alongside confirmPendingInit: both go through E2eeManager's persistence locks
+        // (withMetadataLock / withFriendAndMetadataLock), which serialize their writes.
+        if (confirmingInvites.contains(qr)) return
         Log.d(TAG, "confirmQrScan: friendName=$friendName")
         uiStateStore.onPendingQrForNaming(null)
-        if (consumedInvites.contains(qr)) {
-            Log.w(TAG, "confirmQrScan: invite already accepted")
-            showInviteError(MR.strings.invite_already_used)
-            return
-        }
-        // Marked before the async exchange so a duplicate confirm can't start a second one.
-        // Kept even if the mailbox post fails: the pairing is already persisted and its init
-        // message stays queued in the outbox for retry.
-        consumedInvites.add(qr)
         locationSource.confirmQrScan()
 
         // Reset our own invite state immediately.
@@ -506,7 +530,8 @@ class LocationViewModel(
         uiStateStore.setInviteSheetShowing(false)
 
         val qrWithName = qr.copy(suggestedName = friendName)
-        _isExchanging.value = true
+        if (!confirmingInvites.add(qr)) return
+        beginExchange()
         viewModelScope.launch {
             try {
                 val (initPayload, bobEntry) = e2eeManager.processScannedQr(qrWithName, displayName.value)
@@ -527,36 +552,25 @@ class LocationViewModel(
                         return@launch
                     }
                     if (isSharingLocation.value) {
-                        val intent =
-                            Intent(getApplication(), LocationService::class.java).apply {
-                                action = LocationService.ACTION_FORCE_PUBLISH
-                                putExtra(LocationService.EXTRA_FRIEND_ID, bobEntry.id)
-                            }
-                        startLocationService(intent)
+                        forcePublish(bobEntry.id)
                     }
 
-                    withContext(Dispatchers.Main.immediate) {
-                    }
-                    locationSource.markAwaitingFirstUpdate(bobEntry.id)
-                    locationSource.triggerRapidPoll()
-                    locationSource.wakePoll()
+                    expectFirstUpdate(bobEntry.id)
                 } catch (e: Exception) {
                     Log.e(TAG, "confirmQrScan inner failure: ${e.message}")
                     updateStatus(e)
-                } finally {
-                    _isExchanging.value = false
                 }
             } catch (e: InviteAlreadyAcceptedException) {
-                // Already paired from this invite (so it stays marked as consumed).
+                // Already paired from this invite (a duplicate confirm, or a friend since removed).
                 Log.w(TAG, "confirmQrScan: invite already accepted")
                 showInviteError(MR.strings.invite_already_used)
-                _isExchanging.value = false
             } catch (e: Exception) {
                 Log.e(TAG, "confirmQrScan: processScannedQr failed", e)
-                // No pairing was created, so the invite may be tried again.
-                consumedInvites.remove(qr)
+                // No pairing was created (the consumed record commits with it), so the invite may be tried again.
                 if (e is InviteExpiredException) showInviteError(MR.strings.invite_expired) else updateStatus(e)
-                _isExchanging.value = false
+            } finally {
+                confirmingInvites.remove(qr)
+                endExchange()
             }
         }
     }
@@ -571,7 +585,7 @@ class LocationViewModel(
         _inviteState.value = InviteState.None
         uiStateStore.setInviteSheetShowing(false)
 
-        _isExchanging.value = true
+        beginExchange()
         viewModelScope.launch {
             try {
                 val entry = e2eeManager.processKeyExchangeInit(payload, name, aliceEkPub)
@@ -581,31 +595,22 @@ class LocationViewModel(
                         locationSource.onFriendsUpdated(e2eeManager.listFriends())
                         locationSource.onPendingInvitesUpdated(e2eeManager.listPendingInvites())
                     }
-                    locationSource.markAwaitingFirstUpdate(entry.id)
-                    locationSource.triggerRapidPoll()
-                    locationSource.wakePoll()
+                    expectFirstUpdate(entry.id)
                     try {
                         if (isSharingLocation.value) {
-                            val intent =
-                                Intent(getApplication(), LocationService::class.java).apply {
-                                    action = LocationService.ACTION_FORCE_PUBLISH
-                                    putExtra(LocationService.EXTRA_FRIEND_ID, entry.id)
-                                }
-                            startLocationService(intent)
+                            forcePublish(entry.id)
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "confirmPendingInit: inner failure: ${e.message}")
                         updateStatus(e)
-                    } finally {
-                        _isExchanging.value = false
                     }
                 } else {
                     Log.e(TAG, "confirmPendingInit: processKeyExchangeInit returned null")
-                    _isExchanging.value = false
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "confirmPendingInit: processKeyExchangeInit failed", e)
-                _isExchanging.value = false
+            } finally {
+                endExchange()
             }
         }
     }
@@ -636,17 +641,27 @@ class LocationViewModel(
         }
     }
 
+    /** Tail of a new pairing: poll fast until the friend's first update arrives. */
+    private fun expectFirstUpdate(friendId: String) {
+        locationSource.markAwaitingFirstUpdate(friendId)
+        locationSource.triggerRapidPoll()
+        locationSource.wakePoll()
+    }
+
+    /** Asks the service to broadcast now: to one friend, or to every non-paused friend. */
+    private fun forcePublish(friendId: String? = null) {
+        startLocationService(
+            Intent(getApplication(), LocationService::class.java).apply {
+                action = LocationService.ACTION_FORCE_PUBLISH
+                if (friendId != null) putExtra(LocationService.EXTRA_FRIEND_ID, friendId)
+            },
+        )
+    }
+
     fun setInviteSheetShowing(showing: Boolean) {
         uiStateStore.setInviteSheetShowing(showing)
         if (showing) {
             locationSource.triggerRapidPoll()
-        }
-    }
-
-    fun markCurrentInviteExported() {
-        val current = _inviteState.value
-        if (current is InviteState.Pending) {
-            markInviteExported(current.qr.ekPub)
         }
     }
 
@@ -736,9 +751,7 @@ class LocationViewModel(
         } else if (hasPermission && notified) {
             prefs.edit().putBoolean(KEY_STOPPED_FOR_MISSING_PERMISSION, false).apply()
             if (isSharingLocation.value) {
-                startLocationService(
-                    Intent(app, LocationService::class.java).apply { action = LocationService.ACTION_FORCE_PUBLISH },
-                )
+                forcePublish()
             }
         }
     }

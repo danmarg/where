@@ -46,8 +46,6 @@ data class FriendEntry(
     val isConfirmed: Boolean = false,
     val lastSentTs: Long = 0L,
     val lastPollTs: Long = 0L,
-    val sharingEnabled: Boolean = true,
-    val lastDecryptFailed: Boolean = false,
     val version: Int = 0,
     val isCaughtUp: Boolean = false,
     /** Epoch-seconds the peer first reported `stationary=true` in the current run. Null when moving. */
@@ -84,7 +82,7 @@ data class FriendEntry(
 
     /**
      * UI hint: silent for nearly the server's retention, so what this friend needs has probably
-     * expired. Judged from a successful empty poll ([isCaughtUp]) after the threshold, not the
+     * expired. Judged from a poll that drained the mailbox ([isCaughtUp]: an empty GET, or a short page fully acked) after the threshold, not the
      * clock, so a returning device doesn't show it before it has looked. Assumes a sane clock.
      */
     val mayNeedRepair: Boolean
@@ -376,6 +374,12 @@ class E2eeManager(
         }
     }
 
+    suspend fun listOwedStops(): List<String> = persistence.listOwedStops()
+
+    suspend fun addOwedStop(friendId: String) = persistence.addOwedStop(friendId)
+
+    suspend fun removeOwedStop(friendId: String) = persistence.removeOwedStop(friendId)
+
     suspend fun getOrphanedOutbox(): List<Pair<String, EncryptedOutboxMessage>> = persistence.getOrphanedOutbox()
 
     suspend fun deleteOutboxByFriendId(friendId: String) = persistence.deleteOutboxByFriendId(friendId)
@@ -429,6 +433,10 @@ class E2eeManager(
         return updatedEntry to message
     }
 
+    /** True if [qr] was already accepted on this device and its record is still kept (even if the friend was removed). */
+    suspend fun isInviteConsumed(qr: QrPayload): Boolean =
+        persistence.withMetadataLock { isInviteConsumed(fingerprint(qr.ekPub.toDhPublicKey()), currentTimeSeconds()) }
+
     @Throws(Exception::class, SelfPairingException::class, InviteAlreadyAcceptedException::class, AuthenticationException::class)
     suspend fun processScannedQr(
         qr: QrPayload,
@@ -469,9 +477,16 @@ class E2eeManager(
                 throw SelfPairingException()
             }
             // Checked under the store lock, so two confirms of the same invite can't both pair.
-            if (metadata.friends.any { it.isFromInvite(qr) }) {
+            // The consumed-invite record also covers a friend removed since: the inviter deleted the
+            // invite on the first init, so pairing again would reach a mailbox nobody polls.
+            val now = currentTimeSeconds()
+            val inviteFp = fingerprint(qr.ekPub.toDhPublicKey())
+            if (metadata.friends.any { it.isFromInvite(qr) } || metadata.isInviteConsumed(inviteFp, now)) {
                 throw InviteAlreadyAcceptedException()
             }
+            // An invite without an expiry never lapses on its own, so its record is kept a week.
+            val keepUntil = qr.expiresAt?.plus(2 * INVITE_EXPIRY_GRACE_SECONDS) ?: (now + UNDATED_INVITE_RECORD_SECONDS)
+            metadata.markInviteConsumed(inviteFp, keepUntil, now)
             PersistenceAction.Update(entry) to (payload to entry)
         }
     }
@@ -491,15 +506,10 @@ class E2eeManager(
      */
     data class PollBatchResult(
         val decryptedLocations: List<LocationPlaintext>,
-        val anySuccess: Boolean,
-        val hadSilentDrops: Boolean,
         /** Ids to delete from the polled mailbox (the core's [ProtocolCore.Effect.Ack]). */
         val processedIds: List<String>,
         val anyReplay: Boolean = false,
-        val failCount: Int = 0,
-        val hadStateUpdate: Boolean = false,
         val hadDhRatchet: Boolean = false,
-        val shouldAck: Boolean = true,
         /** The polled mailbox, if the receive token rotated away from it (the core's [ProtocolCore.Effect.RetireToken]). */
         val retiredToken: String? = null,
     )
@@ -550,7 +560,8 @@ class E2eeManager(
                     LocationPlaintext(lat = it.lat, lng = it.lng, acc = it.acc, ts = clampTs(it.ts), stationary = it.stationary)
                 }
             val stoppedSharingTs = delivered.filterIsInstance<MessagePlaintext.StoppedSharing>().maxOfOrNull { it.ts }?.let { clampTs(it) }
-            val lastLocation = decryptedLocations.lastOrNull()
+            // Newest by ts; on a tie the later frame wins (delivery order).
+            val lastLocation = decryptedLocations.withIndex().maxWithOrNull(compareBy({ it.value.ts }, { it.index }))?.value
             val storedLastTs = entry.lastTs?.takeIf { it <= maxTs } ?: 0
 
             // In the same transaction as the new session (see ProtocolCore's atomicity contract).
@@ -596,6 +607,10 @@ class E2eeManager(
                     lastLng = if (lastLocation != null && (lastLocation.ts >= storedLastTs)) lastLocation.lng else entry.lastLng,
                     lastTs = if (lastLocation != null && (lastLocation.ts >= storedLastTs)) lastLocation.ts else entry.lastTs,
                     lastPollTs = currentTimeSeconds(),
+                    // A non-empty batch means the mailbox may hold more: only the poll that ends
+                    // it (an empty GET, or a short page fully acked; see updatePollState) says
+                    // caught up, so a failed poll can't leave a stale true beside this fresh lastPollTs.
+                    isCaughtUp = false,
                     stationarySinceTs = newStationarySinceTs,
                     stoppedAtTs = newStoppedAtTs,
                 )
@@ -604,14 +619,9 @@ class E2eeManager(
             PersistenceAction.Update(updatedEntry) to
                 PollBatchResult(
                     decryptedLocations = decryptedLocations,
-                    anySuccess = report.anySuccess,
-                    hadSilentDrops = report.silentDrops > 0,
                     processedIds = idsToAck,
                     anyReplay = report.anyReplay,
-                    failCount = report.failCount,
-                    hadStateUpdate = report.stateAdvanced,
                     hadDhRatchet = report.dhRatchet,
-                    shouldAck = idsToAck.isNotEmpty(),
                     retiredToken = step.effects.filterIsInstance<ProtocolCore.Effect.RetireToken>().singleOrNull()?.mailbox,
                 )
         }
@@ -635,26 +645,23 @@ class E2eeManager(
         }
     }
 
-    suspend fun updateLastPollTs(
+    /**
+     * Records a finished poll: both fields in one transaction, so they never disagree. A poll that
+     * changes nothing but [FriendEntry.lastPollTs] by under [POLL_STATE_WRITE_GRANULARITY_SECONDS]
+     * isn't written (the row is a full rewrite, and polls come every few seconds): its readers
+     * ([FriendEntry.mayNeedRepair], past-retention, the debug "poll:" age) work in days, and a
+     * change of [isCaughtUp] or a clock stepped back is always written.
+     */
+    suspend fun updatePollState(
         id: String,
         ts: Long,
-    ) {
-        persistence.withFriendAndMetadataLock(id) { entry, _ ->
-            if (entry != null) {
-                PersistenceAction.Update(entry.copy(lastPollTs = ts)) to Unit
-            } else {
-                PersistenceAction.None to Unit
-            }
-        }
-    }
-
-    suspend fun updateIsCaughtUp(
-        id: String,
         isCaughtUp: Boolean,
     ) {
         persistence.withFriendAndMetadataLock(id) { entry, _ ->
-            if (entry != null && entry.isCaughtUp != isCaughtUp) {
-                PersistenceAction.Update(entry.copy(isCaughtUp = isCaughtUp)) to Unit
+            if (entry != null && entry.isCaughtUp == isCaughtUp && ts - entry.lastPollTs in 0 until POLL_STATE_WRITE_GRANULARITY_SECONDS) {
+                PersistenceAction.None to Unit
+            } else if (entry != null) {
+                PersistenceAction.Update(entry.copy(lastPollTs = ts, isCaughtUp = isCaughtUp)) to Unit
             } else {
                 PersistenceAction.None to Unit
             }
@@ -711,3 +718,5 @@ class E2eeManager(
         const val MAX_PEER_CLOCK_SKEW_SECONDS = 10 * 60L
     }
 }
+
+private const val UNDATED_INVITE_RECORD_SECONDS = 7L * 24 * 3600

@@ -37,15 +37,12 @@ internal fun Context.canRunLocationService(): Boolean =
 internal fun Context.needsBackgroundService(userStore: UserStore): Boolean = userStore.isSharingLocation.value && canRunLocationService()
 
 /**
- * Serializes poll cycles and holds the hourly invite-cleanup timestamp. One instance is shared by
+ * Serializes poll cycles. One instance is shared by
  * every [FriendPoller] in the app (see [WhereApplication.pollGate]) so the service, worker and
- * foreground loop don't surface the same handshake twice or repeat cleanup; tests get their own.
+ * foreground loop don't surface the same handshake twice; tests get their own.
  */
 internal class PollGate {
     val mutex = Mutex()
-
-    @Volatile
-    var lastCleanupTime: Long = 0L
 }
 
 /**
@@ -75,11 +72,6 @@ internal class FriendPoller(
     private suspend fun pollLocked(source: WakeSource) {
         try {
             Log.d(TAG, "Polling for location updates (source=${source.value})")
-            val now = clock()
-            if (now - gate.lastCleanupTime > 3600_000L) {
-                e2eeManager.cleanupExpiredInvites()
-                gate.lastCleanupTime = now
-            }
             val updates =
                 locationClient.poll(
                     isForeground = locationSource.isAppInForeground.value,
@@ -92,8 +84,8 @@ internal class FriendPoller(
                 for (update in updates) {
                     locationSource.onFriendUpdate(update, updateTime)
                     locationSource.onFriendLocationReceived(update.userId)
-                    // Persistence: use the timestamp from the update payload.
-                    e2eeManager.updateLastLocation(update.userId, update.lat, update.lng, update.timestamp)
+                    // Persisted already: processBatch stores each batch's newest Location, and the
+                    // update is the newest of those (same clamping, same tie rule).
                 }
                 val reportedError = pollPendingInvites()
                 locationSource.onFriendsUpdated(e2eeManager.listFriends())
@@ -110,21 +102,29 @@ internal class FriendPoller(
     }
 
     /**
-     * True while something needs a fast poll: the share sheet is open, Bob is on the naming
-     * screen, a fresh incoming invite awaits Alice's confirmation, or rapid polling was recently
-     * requested.
+     * True while something needs a fast poll: the share sheet is open or Bob is on the naming
+     * screen (while visible, and for [BACKGROUND_INVITE_WINDOW_MS] after the app is
+     * backgrounded, since sharing the link leaves the app just as Bob scans), a fresh incoming
+     * invite awaits Alice's confirmation, or rapid polling was recently requested.
      */
     fun isRapidPolling(): Boolean {
         val now = clock()
-        val recentlyTriggered = now - locationSource.lastRapidPollTrigger.value < 60_000L
-        val isSheetShowing = uiStateStore.isInviteSheetShowing.value
-        val isNaming = uiStateStore.pendingQrForNaming.value != null
-        // Bounded: an incoming invite that's never confirmed or cancelled (app backgrounded,
-        // notification ignored, etc.) must not pin the client at the 2s rapid interval forever.
+        // The repository keeps the background mark as a monotonic TimeMark; the policy wants a
+        // timestamp on this poller's clock (the same one the other stamps use).
+        val backgroundedAt = locationSource.appBackgroundedAt.value
         val setAt = locationSource.pendingInitPayloadSetAt.value
-        val hasFreshPendingInit =
-            locationSource.pendingInitPayload.value != null && setAt != 0L && now - setAt < PENDING_INIT_RAPID_TIMEOUT_MS
-        return isSheetShowing || hasFreshPendingInit || recentlyTriggered || isNaming
+        val trigger = locationSource.lastRapidPollTrigger.value
+        return PollPolicy.isRapid(
+            PollPolicy.State(
+                appForeground = locationSource.isAppInForeground.value,
+                backgroundedAtMs = backgroundedAt?.let { now - it.elapsedNow().inWholeMilliseconds },
+                inviteSheetShowing = uiStateStore.isInviteSheetShowing.value,
+                pendingQrForNaming = uiStateStore.pendingQrForNaming.value != null,
+                pendingInitSetAtMs = setAt.takeIf { locationSource.pendingInitPayload.value != null && it != 0L },
+                lastRapidTriggerMs = trigger.takeIf { it != 0L },
+            ),
+            now,
+        )
     }
 
     /** Surfaces incoming handshakes. Returns true if it reported an error to the UI. */
@@ -193,8 +193,9 @@ internal class FriendPoller(
          * Bounds the impact of an invite the user never acts on (see #336) - long enough
          * to notice and respond to a notification, short enough not to run rapid mode forever.
          */
-        internal const val PENDING_INIT_RAPID_TIMEOUT_MS = 5 * 60 * 1000L
-        internal const val RAPID_POLL_INTERVAL_MS = 2_000L
-        internal const val FOREGROUND_POLL_INTERVAL_MS = 10_000L
+        internal const val PENDING_INIT_RAPID_TIMEOUT_MS = PollPolicy.PENDING_INIT_BOUND_MS
+        internal const val BACKGROUND_INVITE_WINDOW_MS = PollPolicy.BACKGROUND_INVITE_WINDOW_MS
+        internal const val RAPID_POLL_INTERVAL_MS = PollPolicy.RAPID_INTERVAL_MS
+        internal const val FOREGROUND_POLL_INTERVAL_MS = PollPolicy.FOREGROUND_INTERVAL_MS
     }
 }

@@ -254,8 +254,6 @@ internal class E2eeStore(
             isConfirmed = if (finalEntry.isConfirmed) 1L else 0L,
             lastSentTs = finalEntry.lastSentTs,
             lastPollTs = finalEntry.lastPollTs,
-            sharingEnabled = if (finalEntry.sharingEnabled) 1L else 0L,
-            lastDecryptFailed = if (finalEntry.lastDecryptFailed) 1L else 0L,
             version = nextVersion.toLong(),
             stationarySinceTs = finalEntry.stationarySinceTs,
             stoppedAtTs = finalEntry.stoppedAtTs,
@@ -269,26 +267,6 @@ internal class E2eeStore(
     ) {
         database.friendsQueries.deleteFriend(friendId)
         if (!keepOutbox) database.outboxQueries.deleteOutboxByFriendId(friendId)
-    }
-
-    suspend fun insertOutbox(
-        msgId: String,
-        friendId: String,
-        token: String,
-        payloadBlob: ByteArray,
-        createdAt: Long,
-    ) = withStoreLock {
-        insertOutboxInternal(msgId, friendId, token, payloadBlob, createdAt)
-    }
-
-    internal fun insertOutboxInternal(
-        msgId: String,
-        friendId: String,
-        token: String,
-        payloadBlob: ByteArray,
-        createdAt: Long,
-    ) {
-        database.outboxQueries.insertOutbox(msgId, friendId, token, payloadBlob, createdAt)
     }
 
     suspend fun deleteOutboxByMsgId(
@@ -323,6 +301,13 @@ internal class E2eeStore(
         return database.outboxQueries.getOutboxForFriend(friendId).executeAsList().map { it.toMessage() }
     }
 
+    /** Friends a stop is still owed to (see [LocationClient]); survives a restart. */
+    suspend fun listOwedStops(): List<String> = withStoreLock { database.owedStopsQueries.getAll().executeAsList() }
+
+    suspend fun addOwedStop(friendId: String) = withStoreLock { database.owedStopsQueries.insertOwed(friendId) }
+
+    suspend fun removeOwedStop(friendId: String) = withStoreLock { database.owedStopsQueries.deleteOwed(friendId) }
+
     /** Outbox rows whose friend has been removed, oldest first, as (friendId, message) pairs. */
     suspend fun getOrphanedOutbox(): List<Pair<String, EncryptedOutboxMessage>> =
         withStoreLock {
@@ -349,8 +334,6 @@ internal class E2eeStore(
             isConfirmed = isConfirmed == 1L,
             lastSentTs = lastSentTs,
             lastPollTs = lastPollTs,
-            sharingEnabled = sharingEnabled == 1L,
-            lastDecryptFailed = lastDecryptFailed == 1L,
             version = version.toInt(),
             stationarySinceTs = stationarySinceTs,
             stoppedAtTs = stoppedAtTs,
@@ -377,6 +360,19 @@ internal class E2eeStore(
 
         fun addDiagnosticEvent(message: String)
 
+        /** True if an invite with this [fingerprint] was accepted here and is still within its retention. */
+        fun isInviteConsumed(
+            fingerprint: Fingerprint,
+            now: Long,
+        ): Boolean
+
+        /** Records an accepted invite (kept until [keepUntil]) in the same transaction as the rest; prunes lapsed records. */
+        fun markInviteConsumed(
+            fingerprint: Fingerprint,
+            keepUntil: Long,
+            now: Long,
+        )
+
         fun insertOutbox(
             msgId: String,
             friendId: String,
@@ -392,6 +388,12 @@ internal class E2eeStore(
         )
     }
 
+    private data class ConsumedInvite(
+        val fingerprint: Fingerprint,
+        val keepUntil: Long,
+        val now: Long,
+    )
+
     private data class OutboxInsert(
         val msgId: String,
         val friendId: String,
@@ -404,6 +406,23 @@ internal class E2eeStore(
         override val friends: List<FriendEntry> get() = this@E2eeStore.friends.values.toList()
 
         private val queuedOutboxInserts = mutableListOf<OutboxInsert>()
+
+        private val queuedConsumedInvites = mutableListOf<ConsumedInvite>()
+
+        override fun isInviteConsumed(
+            fingerprint: Fingerprint,
+            now: Long,
+        ): Boolean =
+            queuedConsumedInvites.any { it.fingerprint == fingerprint } ||
+                database.consumedInvitesQueries.isConsumed(fingerprint.toByteArray(), now).executeAsOne() > 0
+
+        override fun markInviteConsumed(
+            fingerprint: Fingerprint,
+            keepUntil: Long,
+            now: Long,
+        ) {
+            queuedConsumedInvites.add(ConsumedInvite(fingerprint, keepUntil, now))
+        }
 
         override fun insertOutbox(
             msgId: String,
@@ -452,6 +471,10 @@ internal class E2eeStore(
         }
 
         fun applyToDb() {
+            queuedConsumedInvites.forEach { c ->
+                database.consumedInvitesQueries.pruneConsumed(c.now)
+                database.consumedInvitesQueries.insertConsumed(c.fingerprint.toByteArray(), c.keepUntil)
+            }
             queuedOutboxDeletes.forEach { (friendId, token) -> database.outboxQueries.deleteOutboxByFriendIdAndToken(friendId, token) }
             queuedOutboxInserts.forEach { outbox ->
                 database.outboxQueries.insertOutbox(

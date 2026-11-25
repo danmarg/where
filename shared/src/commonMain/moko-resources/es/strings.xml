@@ -26,7 +26,6 @@
     <string name="h_ago">hace %d h</string>
     <string name="d_ago">hace %d d</string>
     <string name="stale_friend_warning">No se ha visto a tu amigo recientemente: se pausó el uso compartido por seguridad</string>
-    <string name="decryption_error_warning">Error de seguridad: no se pudieron descifrar los mensajes de este amigo</string>
     <string name="rename">Renombrar</string>
     <string name="resume">Reanudar</string>
     <string name="pause">Pausar</string>

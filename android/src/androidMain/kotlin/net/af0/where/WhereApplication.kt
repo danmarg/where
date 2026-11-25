@@ -23,6 +23,14 @@ open class WhereApplication : Application() {
     open val locationSource: LocationSource by lazy { LocationRepository(userStore) }
     open val uiStateStore: UiStateSource by lazy { UiStateStore() }
     internal val pollGate: PollGate by lazy { PollGate() }
+
+    /**
+     * [LocationService.clock] time of the service's last poll, 0 when it isn't running: the
+     * WorkManager heartbeat skips its tick while the service has polled within its cadence (E8).
+     * Held here, with the other state the service and the worker share, rather than in a static.
+     */
+    @Volatile
+    internal var servicePolledAtMs: Long = 0L
     internal open val friendPoller: FriendPoller by lazy {
         FriendPoller(
             locationClient,

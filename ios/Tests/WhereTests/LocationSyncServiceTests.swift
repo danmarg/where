@@ -743,6 +743,29 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertFalse(isRapid2)
     }
 
+    func testOpenInviteSheetRapidPollingIsBoundedAfterBackgrounding() async throws {
+        service.isInviteSheetShowing = true
+        XCTAssertTrue(service.isRapidPolling())
+        // Opening the sheet also stamps the 60 s rapid-poll trigger; clear it so the rest of the
+        // test exercises the sheet's own window.
+        service.lastRapidPollTrigger = Date(timeIntervalSince1970: 0)
+        XCTAssertTrue(service.isRapidPolling())
+
+        // Sharing the link backgrounds the app: rapid polling holds for the window...
+        service.onBackgroundEntry()
+        XCTAssertTrue(service.isRapidPolling())
+        service.leftActiveAt = Date(timeIntervalSinceNow: -60)
+        XCTAssertTrue(service.isRapidPolling())
+
+        // ...then ends, so a forgotten sheet can't poll at 2 s forever.
+        service.leftActiveAt = Date(timeIntervalSinceNow: -(LocationSyncService.inviteSheetBackgroundRapidWindow + 1))
+        XCTAssertFalse(service.isRapidPolling())
+
+        // Returning to the foreground re-arms it.
+        service.onForegroundEntry()
+        XCTAssertTrue(service.isRapidPolling())
+    }
+
     func testAwaitingFirstUpdateStopsForcingRapidPollAfterTimeout() async throws {
         // Regression test for #336: a friend who never sends a first location update must not
         // pin the client at rapid polling forever.

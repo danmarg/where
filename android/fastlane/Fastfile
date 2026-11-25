@@ -98,6 +98,40 @@ platform :android do
     repo = "danmarg/where"
     head = `git rev-parse HEAD`.strip
 
+    # The tag on GitHub is the authority (a local tag may be stale). One at another commit means
+    # this version was already released: re-tagging it would replace that release's APKs with a
+    # different build (as on 2026-11-22, run before deploy's bump). FORCE_RETAG=1 allows it, e.g.
+    # to repair a release by rebuilding it at its original commit (git checkout --detach <sha>).
+    # Checked before main is pushed. (Main is still pushed before the build and upload finish.)
+    # The commit, peeled (^{}) if it's an annotated tag. A failing ls-remote (network, auth) must
+    # stop the lane: treating it as "no tag" would skip this guard.
+    ls_out = `git ls-remote --tags origin "refs/tags/#{tag}" "refs/tags/#{tag}^{}"`
+    UI.user_error!("git ls-remote failed; can't tell whether #{tag} is already released.") unless $?.success?
+    remote_refs = ls_out.lines.map(&:split)
+    remote_tag = (remote_refs.find { |_, ref| ref.end_with?("^{}") } || remote_refs.first)&.first
+    # The unpeeled ref: the tag object itself. It differs from remote_tag for an annotated tag.
+    remote_obj = remote_refs.find { |_, ref| !ref.end_with?("^{}") }&.first
+    annotated = !remote_obj.nil? && remote_obj != remote_tag
+    force = ENV["FORCE_RETAG"] == "1"
+    if remote_tag && remote_tag != head && !force
+      UI.user_error!(
+        "#{tag} is already released at #{remote_tag[0, 8]}, not HEAD (#{head[0, 8]}). Bump the version " \
+        "first (./build.sh --deploy-android-internal), or set FORCE_RETAG=1 to move the tag.",
+      )
+    end
+
+    # HEAD must be deploy's version-bump commit, so the tag lands on the commit Play got, not on
+    # unrelated later work (the APKs are built from HEAD, so the tag must be HEAD). FORCE_RETAG=1
+    # skips this (e.g. repairing at an older commit).
+    subject = `git log -1 --format=%s HEAD`.strip
+    unless force || subject.start_with?("Bump Android version to #{version_name} ")
+      UI.user_error!(
+        "HEAD (#{head[0, 8]}, \"#{subject}\") isn't the version-bump commit for #{version_name}. " \
+        "The tag must point at the commit that was built, so put later commits before the bump (or " \
+        "check out the bump commit), or set FORCE_RETAG=1 to tag HEAD anyway.",
+      )
+    end
+
     # F-Droid builds the tag from GitHub, so HEAD must be on origin/main. A local main that is
     # only ahead (deploy's version-bump commit, not pushed yet) is pushed here; anything else
     # (another branch, a diverged main) stops.
@@ -109,20 +143,6 @@ platform :android do
       end
       UI.message("Pushing main to origin...")
       sh("git", "push", "origin", "main")
-    end
-
-    # The tag on GitHub is the authority (a local tag may be stale). One at another commit means
-    # this version was already released: re-tagging it would replace that release's APKs with a
-    # different build (as on 2026-11-22, run before deploy's bump). FORCE_RETAG=1 allows it, e.g.
-    # to repair a release by rebuilding it at its original commit (git checkout --detach <sha>).
-    # The commit, peeled (^{}) if it's an annotated tag.
-    remote_refs = `git ls-remote --tags origin "refs/tags/#{tag}" "refs/tags/#{tag}^{}"`.lines.map(&:split)
-    remote_tag = (remote_refs.find { |_, ref| ref.end_with?("^{}") } || remote_refs.first)&.first
-    if remote_tag && remote_tag != head && ENV["FORCE_RETAG"] != "1"
-      UI.user_error!(
-        "#{tag} is already released at #{remote_tag[0, 8]}, not HEAD (#{head[0, 8]}). Bump the version " \
-        "first (./build.sh --deploy-android-internal), or set FORCE_RETAG=1 to move the tag.",
-      )
     end
 
     UI.message("Building signed release APKs for #{tag}...")
@@ -140,10 +160,17 @@ platform :android do
     # recorded that tag-object hash verbatim as the build "commit" instead of peeling it,
     # producing a real (if harmless) provenance mismatch against what actually got built.
     # A lightweight tag's SHA-1 IS the commit hash, so there's nothing to peel.
-    sh("git", "tag", "-f", tag)
+    # Tag the commit we built (captured before the build), not whatever HEAD is now.
+    UI.user_error!("HEAD moved during the build; refusing to tag.") unless `git rev-parse HEAD`.strip == head
+    sh("git", "tag", "-f", tag, head)
     if remote_tag.nil?
       UI.message("Pushing new tag #{tag}...")
       sh("git", "push", "origin", "refs/tags/#{tag}")
+    elsif annotated && force
+      UI.important("FORCE_RETAG: replacing annotated #{tag} with a lightweight tag at #{head[0, 8]}.")
+      sh("git", "push", "--force", "origin", "refs/tags/#{tag}")
+    elsif annotated
+      UI.important("#{tag} on origin is annotated; F-Droid needs a lightweight tag. Rerun with FORCE_RETAG=1 to replace it.")
     elsif remote_tag != head
       UI.important("FORCE_RETAG: moving #{tag} from #{remote_tag[0, 8]} to #{head[0, 8]}.")
       sh("git", "push", "--force", "origin", "refs/tags/#{tag}")

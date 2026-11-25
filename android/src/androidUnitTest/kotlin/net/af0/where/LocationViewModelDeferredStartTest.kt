@@ -62,7 +62,6 @@ class LocationViewModelDeferredStartTest {
                 e2eeManagerParam = mockk(relaxed = true),
                 userStoreParam = userStore,
                 locationClientParam = mockk(relaxed = true),
-                startPolling = false,
                 locationSourceParam = TestFakeLocationSource(),
                 uiStateStoreParam = FakeUiStateStore(),
             )
