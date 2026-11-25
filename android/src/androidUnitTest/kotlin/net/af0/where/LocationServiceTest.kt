@@ -680,9 +680,16 @@ class LocationServiceTest {
             io.mockk.clearMocks(mockClient, answers = false, recordedCalls = true)
 
             fakeLocationSource.setAppForeground(true)
-            advanceUntilIdle()
-
-            io.mockk.coVerify(atLeast = 1) { mockClient.poll(any(), any(), any()) }
+            // The iteration that was already running may be in the gms provider's real-time
+            // failure path (no Play services here); give it real time, advancing virtual time.
+            var polled = false
+            for (attempt in 1..100) {
+                advanceUntilIdle()
+                polled = runCatching { io.mockk.coVerify(atLeast = 1) { mockClient.poll(any(), any(), any()) } }.isSuccess
+                if (polled) break
+                Thread.sleep(100)
+            }
+            assertTrue(polled, "returning to the foreground should poll at once")
         }
 
     /** Delay until the next scheduled AlarmManager alarm, in ms. */
