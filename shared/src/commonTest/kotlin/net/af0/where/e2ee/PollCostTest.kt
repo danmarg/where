@@ -153,6 +153,30 @@ class PollCostTest {
 
     private fun CountingDriver.friendWrites() = executed("INTO Friends")
 
+    // ---- Orphaned outbox backoff ----
+
+    @Test
+    fun `polls do not query for orphaned rows while a removed friend is backing off`() =
+        runTest {
+            val p = paired()
+            p.mailbox.failPosts = true
+            p.alice.removeFriend(p.bobId)
+            // Burn the free retries so the friend is backing off (1 minute, then doubling).
+            repeat(6) { p.alice.processOrphanedOutboxes() }
+            assertEquals(1, p.aliceManager.getOrphanedOutbox().groupBy { it.first }.size)
+
+            p.driver.reset()
+            repeat(5) { p.alice.poll(isForeground = true, pausedFriendIds = emptySet()) }
+            assertEquals(0, p.driver.queried("NOT IN (SELECT id FROM Friends)"), "backing off: no store query")
+
+            // Once the wait is over the drain looks again, and delivers.
+            p.mailbox.failPosts = false
+            clock.advanceSeconds(61)
+            p.alice.poll(isForeground = true, pausedFriendIds = emptySet())
+            assertEquals(1, p.driver.queried("NOT IN (SELECT id FROM Friends)"))
+            assertTrue(p.aliceManager.getOrphanedOutbox().isEmpty())
+        }
+
     // ---- C24 ----
 
     @Test

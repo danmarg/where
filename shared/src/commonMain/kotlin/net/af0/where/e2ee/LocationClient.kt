@@ -797,6 +797,7 @@ open class LocationClient(
             silentDropRetries.keys.removeAll { it.startsWith("$friendId:") }
             orphanedOutboxGeneration++
             orphanRetries.clear()
+            orphanNextRetryAt = 0L
             mayHaveOrphanedOutbox = true
         }
     }
@@ -818,6 +819,12 @@ open class LocationClient(
     // removal resets it (new work), as does a restart.
     private val orphanRetries = mutableMapOf<String, Pair<Int, Long>>()
 
+    // Earliest next attempt (ms) among friends backing off, 0 if none. A backing-off friend leaves
+    // mayHaveOrphanedOutbox false (so routine polls don't re-query the store for up to 6 h); the
+    // drain runs again once this time passes.
+    @kotlin.concurrent.Volatile
+    private var orphanNextRetryAt = 0L
+
     /**
      * Delivers outbox rows left behind by removed friends, in order per friend (friends in
      * parallel), stopping a friend's queue at its first failure. Rows older than the server's
@@ -826,7 +833,9 @@ open class LocationClient(
      */
     @Throws(Exception::class)
     suspend fun processOrphanedOutboxes() {
-        if (!mayHaveOrphanedOutbox || !orphanedOutboxMutex.tryLock()) return
+        val retryAt = orphanNextRetryAt
+        val retryDue = retryAt != 0L && currentTimeMillis() >= retryAt
+        if (!(mayHaveOrphanedOutbox || retryDue) || !orphanedOutboxMutex.tryLock()) return
         try {
             do {
                 val generation = orphanedOutboxGeneration
@@ -844,7 +853,10 @@ open class LocationClient(
     private suspend fun drainOrphanedOutboxesOnce() {
         val cutoff = currentTimeMillis() - ORPHANED_OUTBOX_RETENTION_MILLIS
         val byFriend = store.getOrphanedOutbox().groupBy({ it.first }, { it.second })
-        mutexLock.withLock { orphanRetries.keys.retainAll(byFriend.keys) }
+        mutexLock.withLock {
+            orphanRetries.keys.retainAll(byFriend.keys)
+            orphanNextRetryAt = 0L
+        }
         coroutineScope {
             byFriend.map { (friendId, messages) ->
                 async {
@@ -857,7 +869,8 @@ open class LocationClient(
                     }
                     val retry = mutexLock.withLock { orphanRetries[friendId] }
                     if (retry != null && currentTimeMillis() < retry.second) {
-                        mayHaveOrphanedOutbox = true
+                        // Still backing off: don't re-arm the flag, just remember when to look again.
+                        mutexLock.withLock { noteOrphanRetryAt(retry.second) }
                         return@async
                     }
                     try {
@@ -866,7 +879,6 @@ open class LocationClient(
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
-                        mayHaveOrphanedOutbox = true
                         mutexLock.withLock {
                             val failures = (orphanRetries[friendId]?.first ?: 0) + 1
                             val delay =
@@ -877,11 +889,21 @@ open class LocationClient(
                                     minOf(ORPHAN_RETRY_BASE_MILLIS shl doublings, ORPHAN_RETRY_MAX_MILLIS)
                                 }
                             orphanRetries[friendId] = failures to currentTimeMillis() + delay
+                            if (delay == 0L) {
+                                mayHaveOrphanedOutbox = true // a free retry: the next poll
+                            } else {
+                                noteOrphanRetryAt(currentTimeMillis() + delay)
+                            }
                         }
                     }
                 }
             }.awaitAll()
         }
+    }
+
+    // Caller holds mutexLock.
+    private fun noteOrphanRetryAt(at: Long) {
+        if (orphanNextRetryAt == 0L || at < orphanNextRetryAt) orphanNextRetryAt = at
     }
 
     /**
