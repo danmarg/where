@@ -1028,7 +1028,7 @@ class LocationSyncServiceTests: XCTestCase {
         service.endBackgroundTask = { _ in }
 
         let expectedFriendId = "friend-bob-456"
-        service.pendingForcedSendFriendId = expectedFriendId
+        service.pendingForcedSendFriendIds = [expectedFriendId]
 
         class StringBox: @unchecked Sendable {
             private let lock = NSLock()
@@ -1048,8 +1048,35 @@ class LocationSyncServiceTests: XCTestCase {
 
         XCTAssertEqual(capturedFriendIdBox.get(), expectedFriendId,
             "reportLocation must fire sendLocationToFriend for the pending friend ID set during pairing")
-        XCTAssertNil(service.pendingForcedSendFriendId,
-            "pendingForcedSendFriendId must be cleared after the forced send fires")
+        XCTAssertTrue(service.pendingForcedSendFriendIds.isEmpty,
+            "pendingForcedSendFriendIds must be cleared after the forced send fires")
+    }
+
+    /// Two friends paired before the first fix: both get their first send (a single slot kept one).
+    func testReportLocation_ForcedSendReachesEveryPendingFriend() async throws {
+        let mockClient = MockLocationClient()
+        let svc = serviceWithFix(mockClient)
+        svc.pendingForcedSendFriendIds = ["friend-a", "friend-b"]
+
+        class IdsBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var ids = Set<String>()
+            func add(_ v: String) { lock.lock(); defer { lock.unlock() }; ids.insert(v) }
+            func get() -> Set<String> { lock.lock(); defer { lock.unlock() }; return ids }
+        }
+        let sentIds = IdsBox()
+        let both = XCTestExpectation(description: "Both friends get a send")
+        both.expectedFulfillmentCount = 2
+        mockClient.sendLocationToFriendCallback = { friendId in
+            sentIds.add(friendId)
+            both.fulfill()
+        }
+
+        svc.reportLocation(lat: 37.0, lng: -122.0, accuracy: 10)
+        await fulfillment(of: [both], timeout: 1.0)
+
+        XCTAssertEqual(sentIds.get(), ["friend-a", "friend-b"])
+        XCTAssertTrue(svc.pendingForcedSendFriendIds.isEmpty)
     }
 
     // MARK: - handleNetworkRestored
@@ -1647,6 +1674,27 @@ class LocationSyncServiceTests: XCTestCase {
         svc.togglePauseFriend(id: "friend-1")
 
         await fulfillment(of: [noSend], timeout: 0.5)
+    }
+
+    /// Unpausing with no fix yet asks for one and sends to that friend when it arrives.
+    func testUnpause_WithNoFix_RequestsAFixAndSendsWhenItArrives() async throws {
+        let mockClient = MockLocationClient()
+        let svc = serviceWithFix(mockClient)
+        mockLocationProvider.location = nil
+        svc.togglePauseFriend(id: "friend-1")  // pause
+        mockLocationProvider.requestImmediateLocationCalled = false
+
+        svc.togglePauseFriend(id: "friend-1")  // unpause, no fix cached
+
+        XCTAssertTrue(mockLocationProvider.requestImmediateLocationCalled, "Unpause must ask for a fix")
+        XCTAssertEqual(svc.pendingForcedSendFriendIds, ["friend-1"])
+
+        let sent = XCTestExpectation(description: "Location sent to the unpaused friend")
+        mockClient.sendLocationToFriendCallback = { friendId in
+            if friendId == "friend-1" { sent.fulfill() }
+        }
+        svc.reportLocation(lat: 37.0, lng: -122.0, accuracy: 10)
+        await fulfillment(of: [sent], timeout: 1.0)
     }
 
     /// So LocationClient retries an owed stop, as on Android.

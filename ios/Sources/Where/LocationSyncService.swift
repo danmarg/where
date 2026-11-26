@@ -186,7 +186,9 @@ final class LocationSyncService: ObservableObject {
         }
         return nil
     }
-    var pendingForcedSendFriendId: String? = nil
+    /// Friends owed a direct first send once a fix is available (new pairings, unpauses with no
+    /// fix); all of them, not one, so two pairings before the first fix both get their send.
+    var pendingForcedSendFriendIds: Set<String> = []
     var skipNetworkRestore: Bool = false  // internal for testing
 
     /// The only sender of broadcast Locations (shared with Android): this service reports fixes
@@ -572,13 +574,19 @@ final class LocationSyncService: ObservableObject {
                     logger.warning("sendStoppedSharingToFriend(\(id)) failed: \(error.localizedDescription)")
                 }
             }
-        } else if let last = locationProvider.lastLocation, canSendLocations() {
-            Task {
-                do {
-                    try await locationClient.sendLocationToFriend(friendId: id, lat: last.coordinate.latitude, lng: last.coordinate.longitude, stationary: locationProvider.isStationary, stamp: stamp)
-                } catch {
-                    logger.warning("sendLocationToFriend(\(id)) on unpause failed: \(error.localizedDescription)")
+        } else if canSendLocations() {
+            if let last = locationProvider.lastLocation {
+                Task {
+                    do {
+                        try await locationClient.sendLocationToFriend(friendId: id, lat: last.coordinate.latitude, lng: last.coordinate.longitude, stationary: locationProvider.isStationary, stamp: stamp)
+                    } catch {
+                        logger.warning("sendLocationToFriend(\(id)) on unpause failed: \(error.localizedDescription)")
+                    }
                 }
+            } else {
+                // No fix yet: send to this friend when the first one arrives (reportLocation).
+                pendingForcedSendFriendIds.insert(id)
+                locationProvider.requestImmediateLocation()
             }
         }
     }
@@ -1066,7 +1074,7 @@ final class LocationSyncService: ObservableObject {
                     }
                 } else {
                     logger.debug("confirmQrScan: lastLocation is nil, deferring the pairing send to the first fix")
-                    self.pendingForcedSendFriendId = bobEntry.id
+                    self.pendingForcedSendFriendIds.insert(bobEntry.id)
                     locationProvider.requestPermissionAndStart()
                 }
                 await pollAll(updateUi: true)
@@ -1120,7 +1128,7 @@ final class LocationSyncService: ObservableObject {
                         logger.error("Failed to send reactive location update to \(entry.id): \(error.localizedDescription)")
                     }
                 } else {
-                    self.pendingForcedSendFriendId = entry.id
+                    self.pendingForcedSendFriendIds.insert(entry.id)
                     locationProvider.requestPermissionAndStart()
                 }
             }
@@ -1202,14 +1210,17 @@ final class LocationSyncService: ObservableObject {
         // If a friend-specific send is pending (set when location was unavailable at pairing
         // time), send it now: per-friend sends aren't broadcasts and don't go through the
         // scheduler, so the newly-paired peer gets our location whatever its interval says.
-        if let friendId = pendingForcedSendFriendId {
-            pendingForcedSendFriendId = nil
-            // The friend may have been paused while this send waited for a fix.
-            if effectivelyPausedIds().contains(friendId) {
-                logger.info("Skipping forced pairing send: \(friendId) is paused")
-            } else {
-                // Before reading the sharing state: a stop issued after it drops the send.
-                let stamp = locationClient.sharingStamp()
+        if !pendingForcedSendFriendIds.isEmpty {
+            let friendIds = pendingForcedSendFriendIds
+            pendingForcedSendFriendIds = []
+            // Before reading the sharing state: a stop issued after it drops the send.
+            let stamp = locationClient.sharingStamp()
+            for friendId in friendIds {
+                // The friend may have been paused while this send waited for a fix.
+                if effectivelyPausedIds().contains(friendId) {
+                    logger.info("Skipping forced pairing send: \(friendId) is paused")
+                    continue
+                }
                 Task {
                     do {
                         try await locationClient.sendLocationToFriend(friendId: friendId, lat: lat, lng: lng, stationary: false, stamp: stamp)
