@@ -90,7 +90,9 @@ class LocationSyncServiceTests: XCTestCase {
             lastLat = lat
             sendLocationCallback?()
         }
+        var lastFriendStationary: Bool? = nil
         func sendLocationToFriend(friendId: String, lat: Double, lng: Double, stationary: Bool, stamp: Int64) async throws {
+            lastFriendStationary = stationary
             sendLocationToFriendCallback?(friendId)
             sendLocationCallback?()
         }
@@ -1027,7 +1029,8 @@ class LocationSyncServiceTests: XCTestCase {
         service.beginBackgroundTask = { _, _ in .invalid }
         service.endBackgroundTask = { _ in }
 
-        let expectedFriendId = "friend-bob-456"
+        try await addFriend()
+        let expectedFriendId = try XCTUnwrap(service.repo.friends.first?.id)
         service.pendingForcedSendFriendIds = [expectedFriendId]
 
         class StringBox: @unchecked Sendable {
@@ -1056,7 +1059,11 @@ class LocationSyncServiceTests: XCTestCase {
     func testReportLocation_ForcedSendReachesEveryPendingFriend() async throws {
         let mockClient = MockLocationClient()
         let svc = serviceWithFix(mockClient)
-        svc.pendingForcedSendFriendIds = ["friend-a", "friend-b"]
+        try await addFriend()
+        try await addFriend()
+        let ids = Set(svc.repo.friends.map { $0.id })
+        XCTAssertEqual(ids.count, 2)
+        svc.pendingForcedSendFriendIds = ids
 
         class IdsBox: @unchecked Sendable {
             private let lock = NSLock()
@@ -1075,8 +1082,93 @@ class LocationSyncServiceTests: XCTestCase {
         svc.reportLocation(lat: 37.0, lng: -122.0, accuracy: 10)
         await fulfillment(of: [both], timeout: 1.0)
 
-        XCTAssertEqual(sentIds.get(), ["friend-a", "friend-b"])
+        XCTAssertEqual(sentIds.get(), ids)
         XCTAssertTrue(svc.pendingForcedSendFriendIds.isEmpty)
+    }
+
+    /// A poor-accuracy fix (a visit or stationary fix) is not sent to a pending friend, who stays
+    /// queued; the next good fix sends with the provider's real stationary state.
+    func testReportLocation_PoorAccuracyFixKeepsPendingFriendQueued() async throws {
+        let mockClient = MockLocationClient()
+        let svc = serviceWithFix(mockClient)
+        try await addFriend()
+        let friendId = try XCTUnwrap(svc.repo.friends.first?.id)
+        svc.pendingForcedSendFriendIds = [friendId]
+        mockLocationProvider.isStationary = true
+
+        let sent = XCTestExpectation(description: "Pending friend sent on the good fix")
+        sent.assertForOverFulfill = true
+        let poor = XCTestExpectation(description: "No send on the poor fix")
+        poor.isInverted = true
+        mockClient.sendLocationToFriendCallback = { _ in poor.fulfill() }
+
+        svc.reportLocation(lat: 37.0, lng: -122.0, accuracy: LocationSyncService.minBroadcastAccuracyMeters + 1000)
+        svc.reportLocation(lat: 37.0, lng: -122.0, accuracy: -1)
+        await fulfillment(of: [poor], timeout: 0.3)
+        XCTAssertEqual(svc.pendingForcedSendFriendIds, [friendId], "a poor fix must leave the friend queued")
+
+        mockClient.sendLocationToFriendCallback = { _ in sent.fulfill() }
+        svc.reportLocation(lat: 37.0, lng: -122.0, accuracy: 10)
+        await fulfillment(of: [sent], timeout: 1.0)
+        XCTAssertTrue(svc.pendingForcedSendFriendIds.isEmpty)
+        XCTAssertEqual(mockClient.lastFriendStationary, true,
+            "the deferred send must carry the provider's stationary state, not a hardcoded false")
+    }
+
+    /// A friend removed while the send waited for a fix is not sent a location.
+    func testReportLocation_SendsToQueuedIdsEvenIfFriendsListLags() async throws {
+        let mockClient = MockLocationClient()
+        let svc = serviceWithFix(mockClient)
+        try await addFriend()
+        let friendId = try XCTUnwrap(svc.repo.friends.first?.id)
+        svc.pendingForcedSendFriendIds = [friendId, "removed-friend"]
+
+        let sent = XCTestExpectation(description: "Every queued id is sent")
+        sent.expectedFulfillmentCount = 2
+        sent.assertForOverFulfill = true
+        class IdsBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var ids = [String]()
+            func add(_ v: String) { lock.lock(); defer { lock.unlock() }; ids.append(v) }
+            func get() -> [String] { lock.lock(); defer { lock.unlock() }; return ids }
+        }
+        let sentIds = IdsBox()
+        mockClient.sendLocationToFriendCallback = { id in
+            sentIds.add(id)
+            sent.fulfill()
+        }
+
+        svc.reportLocation(lat: 37.0, lng: -122.0, accuracy: 10)
+        await fulfillment(of: [sent], timeout: 1.0)
+
+        // "removed-friend" stands for a pairing repo.friends hasn't caught up with: it is still sent.
+        XCTAssertEqual(Set(sentIds.get()), [friendId, "removed-friend"])
+        XCTAssertTrue(svc.pendingForcedSendFriendIds.isEmpty)
+    }
+
+    /// removeFriend drops the friend's queued send.
+    func testRemoveFriend_DropsQueuedForcedSend() async throws {
+        let mockClient = MockLocationClient()
+        let svc = serviceWithFix(mockClient)
+        try await addFriend()
+        let friendId = try XCTUnwrap(svc.repo.friends.first?.id)
+        svc.pendingForcedSendFriendIds = [friendId]
+        await svc.removeFriend(id: friendId)
+        XCTAssertTrue(svc.pendingForcedSendFriendIds.isEmpty)
+    }
+
+    /// A poor fix with friends queued asks for a better one, but only once per interval.
+    func testReportLocation_PoorFixRequestsAFixOnceWithinInterval() async throws {
+        let mockClient = MockLocationClient()
+        let svc = serviceWithFix(mockClient)
+        try await addFriend()
+        svc.pendingForcedSendFriendIds = [try XCTUnwrap(svc.repo.friends.first?.id)]
+        var requests = 0
+        mockLocationProvider.onRequestImmediateLocation = { requests += 1 }
+        let poor = LocationSyncService.minBroadcastAccuracyMeters + 1000
+        svc.reportLocation(lat: 37.0, lng: -122.0, accuracy: poor)
+        svc.reportLocation(lat: 37.0, lng: -122.0, accuracy: poor)
+        XCTAssertEqual(requests, 1)
     }
 
     // MARK: - handleNetworkRestored

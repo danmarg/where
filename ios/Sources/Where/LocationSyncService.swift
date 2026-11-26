@@ -189,6 +189,9 @@ final class LocationSyncService: ObservableObject {
     /// Friends owed a direct first send once a fix is available (new pairings, unpauses with no
     /// fix); all of them, not one, so two pairings before the first fix both get their send.
     var pendingForcedSendFriendIds: Set<String> = []
+    /// Throttles the fix request made when a poor fix leaves friends queued.
+    private var lastPendingFixRequest = Date.distantPast
+    nonisolated static let pendingFixRequestInterval: TimeInterval = 30
     var skipNetworkRestore: Bool = false  // internal for testing
 
     /// The only sender of broadcast Locations (shared with Android): this service reports fixes
@@ -1068,7 +1071,7 @@ final class LocationSyncService: ObservableObject {
                     // Proactively send our first location update to Alice to trigger confirmation on her side.
                     // We use sendLocationToFriend here to bypass the !isConfirmed check in sendLocation().
                     do {
-                        try await locationClient.sendLocationToFriend(friendId: bobEntry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude, stationary: false, stamp: stamp)
+                        try await locationClient.sendLocationToFriend(friendId: bobEntry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude, stationary: locationProvider.isStationary, stamp: stamp)
                     } catch {
                         logger.error("Failed to send proactive location update to \(bobEntry.id): \(error.localizedDescription)")
                     }
@@ -1123,7 +1126,7 @@ final class LocationSyncService: ObservableObject {
                 if let last = locationProvider.lastLocation, canSendLocations() {
                     // Proactively send our first location update to Bob to trigger confirmation on his side.
                     do {
-                        try await locationClient.sendLocationToFriend(friendId: entry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude, stationary: false, stamp: stamp)
+                        try await locationClient.sendLocationToFriend(friendId: entry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude, stationary: locationProvider.isStationary, stamp: stamp)
                     } catch {
                         logger.error("Failed to send reactive location update to \(entry.id): \(error.localizedDescription)")
                     }
@@ -1165,6 +1168,8 @@ final class LocationSyncService: ObservableObject {
     }
 
     func removeFriend(id: String) async {
+        // Before the awaits: a fix arriving meanwhile must not send to the friend being removed.
+        pendingForcedSendFriendIds.remove(id)
         do {
             // Queues a StoppedSharing (if we were sharing with them) and deletes them locally;
             // it's delivered below, after the UI has updated, or by a later poll.
@@ -1203,16 +1208,31 @@ final class LocationSyncService: ObservableObject {
         guard canSendLocations() else { return }
         ownHeading = heading
         lastReportSource = source
-        if accuracy.map({ $0 >= 0 && $0 <= Self.minBroadcastAccuracyMeters }) ?? true {
+        let accuracyUsable = accuracy.map { $0 >= 0 && $0 <= Self.minBroadcastAccuracyMeters } ?? true
+        if accuracyUsable {
             lastReportedLocation = (lat: lat, lng: lng)
         }
 
         // If a friend-specific send is pending (set when location was unavailable at pairing
         // time), send it now: per-friend sends aren't broadcasts and don't go through the
         // scheduler, so the newly-paired peer gets our location whatever its interval says.
-        if !pendingForcedSendFriendIds.isEmpty {
+        // Only a fix the scheduler would broadcast (accurate enough) is sent: a poor one (a visit
+        // or stationary fix kilometres off) leaves the ids queued for the next fix.
+        if !accuracyUsable && !pendingForcedSendFriendIds.isEmpty {
+            // Ask for a better fix, at most once per interval: the one-shot's result is only
+            // reported when accurate enough, but other sources could report poor fixes repeatedly.
+            if Date().timeIntervalSince(lastPendingFixRequest) >= Self.pendingFixRequestInterval {
+                lastPendingFixRequest = Date()
+                locationProvider.requestImmediateLocation()
+            }
+        }
+        if accuracyUsable && !pendingForcedSendFriendIds.isEmpty {
+            // Every queued id is attempted, whether or not repo.friends has caught up with the
+            // pairing yet (its refresh lags): a removed friend's id was dropped by removeFriend,
+            // and a send to an unknown id fails and is logged.
             let friendIds = pendingForcedSendFriendIds
-            pendingForcedSendFriendIds = []
+            pendingForcedSendFriendIds.removeAll()
+            let stationary = locationProvider.isStationary
             // Before reading the sharing state: a stop issued after it drops the send.
             let stamp = locationClient.sharingStamp()
             for friendId in friendIds {
@@ -1223,7 +1243,7 @@ final class LocationSyncService: ObservableObject {
                 }
                 Task {
                     do {
-                        try await locationClient.sendLocationToFriend(friendId: friendId, lat: lat, lng: lng, stationary: false, stamp: stamp)
+                        try await locationClient.sendLocationToFriend(friendId: friendId, lat: lat, lng: lng, stationary: stationary, stamp: stamp)
                     } catch {
                         logger.error("Failed forced pairing send to \(friendId): \(error.localizedDescription)")
                     }
