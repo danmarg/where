@@ -1033,9 +1033,18 @@ final class LocationSyncService: ObservableObject {
                 return
             }
 
-            await clearInvite()
-            // Insert AFTER clearInvite: clearInvite calls resetRapidPoll which clears
-            // awaitingFirstUpdateIds, so inserting before it is a no-op.
+            // Not clearInvite(): it falls back to pendingInitAliceEkPub, which a rapid poll
+            // triggered above may have just set from a scan of our own invite (mutual scan),
+            // and that unrelated pairing would be deleted. The UI state was reset at the top.
+            resetRapidPoll()
+            do {
+                repo.pendingInvites = try await e2eeManager.listPendingInvites()
+            } catch {
+                logger.error("Failed to refresh pending invites after scan: \(error.localizedDescription)")
+            }
+            locationProvider.sharingStateChanged()
+            // Insert AFTER resetRapidPoll, which clears awaitingFirstUpdateIds, so inserting
+            // before it is a no-op.
             awaitingFirstUpdateIds[bobEntry.id] = Date()
             repo.friends = try await e2eeManager.listFriends()
             updateVisibleUsers()

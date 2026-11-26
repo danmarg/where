@@ -1478,6 +1478,39 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertEqual(friends.count, 1)
     }
 
+    /// Mutual scan: while we confirm a scan of Alice's invite, a poll delivers a scan of our own
+    /// invite (pendingInitAliceEkPub set). Finishing our scan must not delete that pairing.
+    func testConfirmQrScan_DoesNotClearUnrelatedPendingInit() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.skipUpdateVisibleUsers = true
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
+        service.pollTimer?.invalidate()
+
+        let alice = makeTestE2eeManager()
+        let aliceQr = try await alice.createInvite(suggestedName: "Alice")
+        let ownQr = try await service.e2eeManager.createInvite(suggestedName: "Me")
+        let fakePayload = Shared.KeyExchangeInitPayload(
+            v: Shared.ProtocolConstantsKt.PROTOCOL_VERSION,
+            ekPub: kotlinByteArray(from: Data([1, 2, 3])),
+            keyConfirmation: kotlinByteArray(from: Data([4, 5, 6])),
+            encryptedName: kotlinByteArray(from: Data(repeating: 0, count: 31)),
+            suggestedName: "Carol",
+            msgId: "msg-mutual"
+        )
+        service.repo.pendingInitPayload = fakePayload
+        service.repo.pendingInitAliceEkPub = ownQr.ekPub
+
+        await service.confirmQrScan(qr: aliceQr, friendName: "Alice")
+
+        XCTAssertNotNil(service.repo.pendingInitPayload, "the incoming pairing's naming dialog must survive")
+        XCTAssertEqual(service.repo.pendingInitAliceEkPub, ownQr.ekPub)
+        let invites = try await service.e2eeManager.listPendingInvites()
+        XCTAssertTrue(invites.contains { $0.qrPayload.ekPub == ownQr.ekPub }, "our own invite must not be deleted")
+    }
+
     /// Invite errors stay until dismissed; a successful poll doesn't clear them.
     func testInviteError_SurvivesStatusResetUntilDismissed() {
         XCTAssertFalse(service.processQrUrl("not a where invite"))
