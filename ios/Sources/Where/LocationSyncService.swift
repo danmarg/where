@@ -116,15 +116,23 @@ final class LocationSyncService: ObservableObject {
     var isInviteActive: Bool { isInviteSheetShowing }
     var skipUpdateVisibleUsers: Bool = false
 
-    /// When the app entered the .background scene phase; nil once active again. Internal for testing.
+    /// When the app last left (or, until it first becomes active, started outside) the foreground; nil
+    /// while active. Stamped at init when not in the foreground so a relaunch into the background (significant-change
+    /// wake) has its invite-sheet rapid-poll window bounded like PollPolicy's `backgroundedAtMs`; a
+    /// foreground launch is covered by `isInForeground()`. Internal for testing.
     var leftActiveAt: Date?
     var lastRapidPollTrigger: Date = Date(timeIntervalSince1970: 0)  // internal for testing
     var lastPollTime: Date = Date(timeIntervalSince1970: 0)  // internal for testing
     private var lastCleanupTime: Date = Date(timeIntervalSince1970: 0)
     var pollTimer: Timer?  // internal for testing
-    private var isPollInFlight = false
+    /// Token of the poll that owns the single in-flight slot; nil when none. A poll the watchdog
+    /// gave up on no longer owns it (see `pollAll`), so it can't free the slot of, or write over, its successor.
+    private var inFlightPollToken: Int?
+    private var nextPollToken = 0
+    var pollWatchdogTimeout: Duration = .seconds(90)  // internal for testing
+    var isPollInFlight: Bool { inFlightPollToken != nil }  // internal for testing
     /// Overridable in tests to simulate foreground/background without UIKit.
-    var isInForeground: () -> Bool = { UIApplication.shared.applicationState == .active }
+    var isInForeground: @MainActor () -> Bool = { UIApplication.shared.applicationState == .active }
     private static let rapidPollInterval: TimeInterval = 2.0
     private static let foregroundPollInterval: TimeInterval = 10.0
     // Target cadence while sharing and backgrounded. NOTE: this is only actually enforced by
@@ -411,6 +419,9 @@ final class LocationSyncService: ObservableObject {
             }
         }
         pathMonitor.start(queue: monitorQueue)
+        // The scene-phase onChange doesn't fire for the initial .active, so stamp here only when not
+        // in the foreground (a background relaunch); a foreground start is measured from the first real backgrounding.
+        leftActiveAt = isInForeground() ? nil : Date()
     }
 
     func setDisplayName(name: String) {
@@ -735,9 +746,11 @@ final class LocationSyncService: ObservableObject {
         }
         // While visible and for a bounded window after the app went to the background (sharing the
         // link leaves the app just as the friend scans). A sheet left open must not poll at 2 s forever.
-        // leftActiveAt is set on the .background scene phase (not .inactive blips) and cleared on .active.
+        // leftActiveAt is stamped at process start and on the .background scene phase (not .inactive
+        // blips) and cleared on .active; nil with the app not in the foreground is not "visible".
         if isInviteSheetShowing,
-           leftActiveAt.map({ Date().timeIntervalSince($0) < Self.inviteSheetBackgroundRapidWindow }) ?? true {
+           isInForeground()
+            || (leftActiveAt.map { Date().timeIntervalSince($0) < Self.inviteSheetBackgroundRapidWindow } ?? false) {
             return true
         }
         return Date().timeIntervalSince(lastRapidPollTrigger) < Self.rapidPollDuration
@@ -794,17 +807,22 @@ final class LocationSyncService: ObservableObject {
 
     func pollAll(updateUi: Bool = true, source: WakeSource = .timer) async {
         if isPollInFlight || databaseOpenError != nil { return }
-        isPollInFlight = true
+        nextPollToken += 1
+        let token = nextPollToken
+        inFlightPollToken = token
         lastPollTime = Date()
+        // False once the watchdog has released this poll's slot (a newer poll may be running).
+        let ownsPoll = { [weak self] in self?.inFlightPollToken == token }
 
         // Watchdog: if the KMP coroutine hangs without returning or throwing (e.g. stalled
         // socket that never reaches a cancellation checkpoint), the defer block never fires and
-        // isPollInFlight would stick permanently. Reset it after 90s regardless.
+        // the slot would stick permanently. Release it after 90s regardless, and only if this
+        // poll still owns it; the stuck poll then drops its results instead of racing the next one.
         let watchdog = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(90))
-            guard let self, self.isPollInFlight else { return }
-            logger.warning("pollAll: watchdog resetting stuck isPollInFlight")
-            self.isPollInFlight = false
+            try? await Task.sleep(for: self?.pollWatchdogTimeout ?? .seconds(90))
+            guard let self, self.inFlightPollToken == token else { return }
+            logger.warning("pollAll: watchdog releasing stuck poll")
+            self.inFlightPollToken = nil
         }
         logger.debug("Polling for location updates (updateUi=\(updateUi), source=\(source.rawValue))")
 
@@ -825,7 +843,8 @@ final class LocationSyncService: ObservableObject {
 
         defer {
             watchdog.cancel()
-            isPollInFlight = false
+            // Only the owner frees the slot: a stale poll finishing late must not clear its successor's.
+            if inFlightPollToken == token { inFlightPollToken = nil }
             backgroundTask.end()
         }
         do {
@@ -835,6 +854,8 @@ final class LocationSyncService: ObservableObject {
                 sharingEnabled: canSendLocations(),
             )
             logger.debug("Got \(updates.count) location updates")
+            // Once per received update, and these are already persisted and acked by poll(), so
+            // they run even if this poll has since lost its slot: nothing would re-deliver them.
             for update in updates {
                 // Location/stationary/stopped state lives on FriendEntry rows (persisted by
                 // E2eeManager.processBatch, which stores each batch's newest Location).
@@ -842,10 +863,19 @@ final class LocationSyncService: ObservableObject {
                 // no parallel store to update here.
                 onFriendLocationReceived(friendId: update.userId)
             }
+            // Past here is the UI snapshot, status and sends: only the poll that owns the slot
+            // may do them, so a stale one can't write over its successor.
+            guard ownsPoll() else {
+                logger.warning("pollAll: stale poll (watchdog released it); skipping its UI refresh")
+                return
+            }
 
-            repo.friends = try await e2eeManager.listFriends()
+            let friends = try await e2eeManager.listFriends()
+            let pendingInvites = try await e2eeManager.listPendingInvites()
+            guard ownsPoll() else { return }
+            repo.friends = friends
             repo.diagnosticLog = e2eeManager.diagnosticLogSnapshot()
-            repo.pendingInvites = try await e2eeManager.listPendingInvites()
+            repo.pendingInvites = pendingInvites
             // Always update visibleUsers to ensure map is fresh when returning to foreground.
             updateVisibleUsers()
 
@@ -857,6 +887,7 @@ final class LocationSyncService: ObservableObject {
             if updateUi || isInviteSheetShowing {
                 _ = try await pollPendingInvites()
             }
+            if !ownsPoll() { return }
             if backgroundTask.didExpire || Task.isCancelled {
                 logger.warning("pollAll: background time expired; skipping heartbeat")
                 updateStatus(nil)  // the poll itself succeeded
@@ -870,6 +901,7 @@ final class LocationSyncService: ObservableObject {
             logger.info("pollAll: sharing=\(self.isSharingLocation) heartbeatDue=\(heartbeatDue)")
             if canSendLocations() && heartbeatDue {
                 let stationary = await isStationaryQuery()
+                if !ownsPoll() { return }
                 // Converge CoreMotion result into the provider's cached flag so
                 // background-entry and network-restore sends read a consistent value.
                 locationProvider.isStationary = stationary
@@ -895,6 +927,7 @@ final class LocationSyncService: ObservableObject {
                         // landing just after would be held back by the send interval, and on a
                         // background wake we'd be suspended before it went out.
                         if let fresh = try await awaitFreshFix(since: now) { fix = fresh }
+                        if !ownsPoll() { return }
                     } else if now.timeIntervalSince(lastFixRequestWithoutFallback) >= Self.fixRequestWithoutFallbackInterval {
                         // No usable fix at all (e.g. approximate location): ask for one, but don't
                         // hold up this poll waiting - the heartbeat stays due until one arrives.
@@ -912,13 +945,15 @@ final class LocationSyncService: ObservableObject {
                 }
             }
 
-            updateStatus(nil)
+            if ownsPoll() { updateStatus(nil) }
         } catch is CancellationError {
             // The wake's task was cancelled (BGTask expiry): stop here. Not a network failure,
             // so the status is left alone; the next poll resumes.
             logger.warning("pollAll: cancelled")
         } catch {
             logger.error("Poll failed: \(error.localizedDescription)")
+            // A stale poll's failure says nothing about the current one.
+            guard ownsPoll() else { return }
             updateStatus(error)
             // The success path above is the only other place this refreshes - without this,
             // a poll failure (the case you most want visibility into) leaves the Events log

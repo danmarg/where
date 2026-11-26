@@ -113,9 +113,12 @@ class LocationSyncServiceTests: XCTestCase {
             processOrphanedOutboxesCallCount += 1
         }
         var onPoll: (@MainActor () -> Void)?
+        /// Each queued gate suspends one poll() call (in order) until the test resumes it.
+        var pollGates: [() async throws -> Void] = []
         var lastPollSharingEnabled: Bool?
         func poll(isForeground: Bool, pausedFriendIds: Set<String>, sharingEnabled: Bool) async throws -> [Shared.UserLocation] {
             _pollCallCount += 1
+            if !pollGates.isEmpty { try await pollGates.removeFirst()() }
             lastPollSharingEnabled = sharingEnabled
             onPoll?()
             return pollResult
@@ -735,6 +738,99 @@ class LocationSyncServiceTests: XCTestCase {
             "onForegroundEntry must reset lastPollTime so the stuck-poll guard fires immediately")
     }
 
+    /// Parks a mock poll() until the test opens it; lets the test order events without sleeping.
+    @MainActor
+    final class PollGate {
+        private var continuation: CheckedContinuation<Void, Never>?
+        var isWaiting: Bool { continuation != nil }
+        func wait() async { await withCheckedContinuation { continuation = $0 } }
+        func open() { continuation?.resume(); continuation = nil }
+    }
+
+    private func waitUntil(_ what: String, timeout: TimeInterval = 5, _ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() > deadline { XCTFail("timed out waiting for \(what)"); throw CancellationError() }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    /// Poll 1 hangs in poll() and the watchdog releases it; poll 2 then takes the slot and hangs too.
+    /// Returns both tasks and gates, with poll 1 still parked (about to finish stale, optionally by throwing).
+    private func startStalePollAndSuccessor(
+        _ mockClient: MockLocationClient, firstError: Error? = nil
+    ) async throws -> (first: Task<Void, Never>, second: Task<Void, Never>, gate1: PollGate, gate2: PollGate) {
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
+        service.pollWatchdogTimeout = .milliseconds(20)
+        let gate1 = PollGate()
+        let gate2 = PollGate()
+        mockClient.pollGates = [
+            { await gate1.wait(); if let firstError { throw firstError } },
+            { await gate2.wait() },
+        ]
+        let svc = service!
+        let first = Task { @MainActor in await svc.pollAll() }
+        try await waitUntil("poll 1 to reach poll()") { gate1.isWaiting }
+        try await waitUntil("the watchdog to release poll 1") { !svc.isPollInFlight }
+        let second = Task { @MainActor in await svc.pollAll() }
+        try await waitUntil("poll 2 to reach poll()") { gate2.isWaiting }
+        XCTAssertEqual(mockClient.pollCallCount, 2)
+        return (first, second, gate1, gate2)
+    }
+
+    func testStalePollAfterWatchdogDoesNotFreeItsSuccessorsSlot() async throws {
+        let mockClient = MockLocationClient()
+        let p = try await startStalePollAndSuccessor(mockClient)
+
+        // The stale poll finishes now. It must not free poll 2's slot...
+        p.gate1.open()
+        await p.first.value
+        XCTAssertTrue(service.isPollInFlight)
+        await service.pollAll()
+        XCTAssertEqual(mockClient.pollCallCount, 2,
+            "a stale poll finishing late must not let a third poll start alongside the second")
+
+        // ...which frees it itself when it finishes.
+        p.gate2.open()
+        await p.second.value
+        XCTAssertFalse(service.isPollInFlight)
+        await service.pollAll()
+        XCTAssertEqual(mockClient.pollCallCount, 3)
+    }
+
+    func testStalePollFailureDoesNotChangeStatus() async throws {
+        let mockClient = MockLocationClient()
+        let p = try await startStalePollAndSuccessor(mockClient, firstError: NSError(domain: "test", code: 1))
+        service.connectionStatus = Shared.ConnectionStatus.Ok()
+
+        p.gate1.open()
+        await p.first.value
+
+        XCTAssertTrue(service.connectionStatus is Shared.ConnectionStatus.Ok,
+            "a stale poll's failure must not overwrite the status the current poll owns")
+        p.gate2.open()
+        await p.second.value
+    }
+
+    func testStalePollStillClearsAwaitingFirstUpdateForAckedUpdates() async throws {
+        let mockClient = MockLocationClient()
+        mockClient.pollResult = [Shared.UserLocation(userId: "friend", lat: 1.0, lng: 2.0, timestamp: 123)]
+        let p = try await startStalePollAndSuccessor(mockClient)
+        service.awaitingFirstUpdateIds = ["friend": Date()]
+
+        // poll() already persisted and acked this update, so losing the slot must not lose its
+        // once-only effect: nothing would deliver it again.
+        p.gate1.open()
+        await p.first.value
+
+        XCTAssertNil(service.awaitingFirstUpdateIds["friend"])
+        p.gate2.open()
+        await p.second.value
+    }
+
     func testIsRapidPolling() async throws {
         service.lastRapidPollTrigger = Date(timeIntervalSinceNow: -10)
         let isRapid1 = service.isRapidPolling()
@@ -746,6 +842,7 @@ class LocationSyncServiceTests: XCTestCase {
     }
 
     func testOpenInviteSheetRapidPollingIsBoundedAfterBackgrounding() async throws {
+        service.isInForeground = { false }
         service.isInviteSheetShowing = true
         XCTAssertTrue(service.isRapidPolling())
         // Opening the sheet also stamps the 60 s rapid-poll trigger; clear it so the rest of the
@@ -764,7 +861,30 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertFalse(service.isRapidPolling())
 
         // Returning to the foreground re-arms it.
+        service.isInForeground = { true }
         service.onForegroundEntry()
+        XCTAssertTrue(service.isRapidPolling())
+    }
+
+    func testInviteSheetRapidPollingIsBoundedAfterBackgroundRelaunch() async throws {
+        // Relaunched into the background (significant-change wake): no .background scene phase was
+        // ever seen, so the window must already run from process start rather than be unbounded.
+        service.isInForeground = { false }
+        service.isInviteSheetShowing = true
+        service.lastRapidPollTrigger = Date(timeIntervalSince1970: 0)
+        // init stamps leftActiveAt when not in the foreground; stand in for that here.
+        service.leftActiveAt = Date()
+        XCTAssertTrue(service.isRapidPolling())
+
+        service.leftActiveAt = Date(timeIntervalSinceNow: -(LocationSyncService.inviteSheetBackgroundRapidWindow + 1))
+        XCTAssertFalse(service.isRapidPolling(), "a sheet flag left set across a background relaunch must stop rapid polling")
+
+        // Unknown (never stamped) while not in the foreground is not "visible" either.
+        service.leftActiveAt = nil
+        XCTAssertFalse(service.isRapidPolling())
+
+        // A foreground launch never sees a scene-phase change, but is visible, so it stays rapid.
+        service.isInForeground = { true }
         XCTAssertTrue(service.isRapidPolling())
     }
 
