@@ -790,6 +790,8 @@ class LocationSyncServiceTests: XCTestCase {
         let first = Task { @MainActor in await svc.pollAll() }
         try await waitUntil("poll 1 to reach poll()") { gate1.isWaiting }
         try await waitUntil("the watchdog to release poll 1") { !svc.isPollInFlight }
+        // Poll 2 must hold its slot for the whole test: only poll 1 is meant to be released early.
+        svc.pollWatchdogTimeout = .seconds(90)
         let second = Task { @MainActor in await svc.pollAll() }
         try await waitUntil("poll 2 to reach poll()") { gate2.isWaiting }
         XCTAssertEqual(mockClient.pollCallCount, 2)
