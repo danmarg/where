@@ -875,7 +875,7 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertTrue(service.isRapidPolling())
 
         // ...then ends, so a forgotten sheet can't poll at 2 s forever.
-        service.leftActiveAt = Date(timeIntervalSinceNow: -(LocationSyncService.inviteSheetBackgroundRapidWindow + 1))
+        service.leftActiveAt = Date(timeIntervalSinceNow: -(Double(PollPolicy.shared.BACKGROUND_INVITE_WINDOW_MS) / 1000 + 1))
         XCTAssertFalse(service.isRapidPolling())
 
         // Returning to the foreground re-arms it.
@@ -894,7 +894,7 @@ class LocationSyncServiceTests: XCTestCase {
         service.leftActiveAt = Date()
         XCTAssertTrue(service.isRapidPolling())
 
-        service.leftActiveAt = Date(timeIntervalSinceNow: -(LocationSyncService.inviteSheetBackgroundRapidWindow + 1))
+        service.leftActiveAt = Date(timeIntervalSinceNow: -(Double(PollPolicy.shared.BACKGROUND_INVITE_WINDOW_MS) / 1000 + 1))
         XCTAssertFalse(service.isRapidPolling(), "a sheet flag left set across a background relaunch must stop rapid polling")
 
         // Unknown (never stamped) while not in the foreground is not "visible" either.

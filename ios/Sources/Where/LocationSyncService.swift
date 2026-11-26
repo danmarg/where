@@ -133,29 +133,19 @@ final class LocationSyncService: ObservableObject {
     var isPollInFlight: Bool { inFlightPollToken != nil }  // internal for testing
     /// Overridable in tests to simulate foreground/background without UIKit.
     var isInForeground: @MainActor () -> Bool = { UIApplication.shared.applicationState == .active }
-    private static let rapidPollInterval: TimeInterval = 2.0
-    private static let foregroundPollInterval: TimeInterval = 10.0
-    // Target cadence while sharing and backgrounded. NOTE: this is only actually enforced by
-    // a running timer while foregrounded (see startPolling()/tick()) — iOS suspends the run
-    // loop once backgrounded, so tick() simply stops firing. In the background, this value is
-    // consulted only where it's read directly (the heartbeat check in pollAll(), driven by
-    // whatever wakes the process — a BGAppRefreshTask or a CoreLocation callback). Real
-    // background cadence is therefore bounded by those wake sources' own scheduling, which
-    // the OS can and does throttle well past 5 minutes; this constant is a target, not a
-    // guarantee.
-    private static let normalPollInterval: TimeInterval = 300.0 // 5 min (background sharing)
-    private static let maintenancePollInterval: TimeInterval = 30 * 60  // ack-only when not sharing
+    // Poll cadence (2 s rapid / 10 s foreground / 5 min background while sharing / 30 min ack-only
+    // maintenance) and the rapid-mode windows live in the shared PollPolicy; see targetPollInterval().
+    // The background cadence is only actually enforced by a running timer while foregrounded (see
+    // startPolling()/tick()): iOS suspends the run loop once backgrounded, so tick() simply stops
+    // firing. In the background the interval is consulted only where it's read directly (the
+    // heartbeat check in pollAll(), driven by whatever wakes the process: a BGAppRefreshTask or a
+    // CoreLocation callback). Real background cadence is therefore bounded by those wake sources'
+    // own scheduling, which the OS can and does throttle well past 5 minutes; the interval is a
+    // target, not a guarantee.
     private static let staleLocationThreshold: TimeInterval = 60.0
     /// LocationManager's jitter radius around a stationary geofence center. (How far a fix must
     /// move to be sent is the send scheduler's policy, shared with Android.)
     static let minimumReportingDistanceMeters: CLLocationDistance = 200
-    private static let rapidPollDuration: TimeInterval = 60.0
-    /// How long an open invite sheet keeps rapid polling after the app leaves .active (mirrors Android's 5 min).
-    static let inviteSheetBackgroundRapidWindow: TimeInterval = 300.0
-    /// How long a newly-added friend who hasn't sent their first location update keeps the
-    /// client in rapid (2s) polling. Bounds the impact of a friend who never shares (see #336) -
-    /// long enough for a normal first exchange, short enough not to run rapid mode forever.
-    private static let awaitingFirstUpdateTimeout: TimeInterval = 5 * 60
     /// Even while stationary, force a real GPS fix at this interval instead of only re-reporting
     /// the cached location. CoreMotion's stationary detection and the underlying CLLocationUpdate
     /// stream/geofence (LocationManager) can each independently get stuck with no other path
@@ -704,10 +694,10 @@ final class LocationSyncService: ObservableObject {
     /// iOS suspends this timer on backgrounding rather than merely slowing it, so tick() simply
     /// stops firing; it resumes on the next onForegroundEntry() → startPolling() call. Background
     /// cadence instead depends entirely on BGAppRefreshTask and CoreLocation wake sources (see
-    /// normalPollInterval's comment) — this timer contributes nothing there.
+    /// targetPollInterval()'s comment) — this timer contributes nothing there.
     func startPolling() {
         pollTimer?.invalidate()
-        // 1Hz, matching rapidPollInterval's timescale but deliberately not equal to it: ticking
+        // 1Hz, matching PollPolicy.RAPID_INTERVAL_MS's timescale but deliberately not equal to it: ticking
         // at exactly the same interval as the shortest target interval this drives against
         // aliases against tick()'s elapsed-time check (the two timestamps are offset by an
         // async hop's worth of delay), causing the check to miss roughly half the time and
@@ -739,27 +729,34 @@ final class LocationSyncService: ObservableObject {
 
     @MainActor
     func targetPollInterval() -> TimeInterval {
-        if isRapidPolling() { return Self.rapidPollInterval }
-        if isInForeground() { return Self.foregroundPollInterval }
-        if repo.friends.isEmpty && repo.pendingInvites.isEmpty { return Self.maintenancePollInterval }
-        return isSharingLocation ? Self.normalPollInterval : Self.maintenancePollInterval
+        let ms = PollPolicy.shared.targetIntervalMs(
+            rapid: isRapidPolling(),
+            appForeground: isInForeground(),
+            sharing: isSharingLocation,
+            hasPeers: !repo.friends.isEmpty || !repo.pendingInvites.isEmpty
+        )
+        return TimeInterval(ms) / 1000
     }
 
+    /// Feeds the shared PollPolicy this service's inputs (all stamped as Dates, converted to epoch
+    /// ms on one clock). `leftActiveAt` is stamped at process start and on the .background scene
+    /// phase (not .inactive blips) and cleared on .active; nil with the app not in the foreground
+    /// is not "visible". A zero `lastRapidPollTrigger` means "never".
     @MainActor
     func isRapidPolling() -> Bool {
-        if awaitingFirstUpdateIds.values.contains(where: { Date().timeIntervalSince($0) < Self.awaitingFirstUpdateTimeout }) {
-            return true
-        }
-        // While visible and for a bounded window after the app went to the background (sharing the
-        // link leaves the app just as the friend scans). A sheet left open must not poll at 2 s forever.
-        // leftActiveAt is stamped at process start and on the .background scene phase (not .inactive
-        // blips) and cleared on .active; nil with the app not in the foreground is not "visible".
-        if isInviteSheetShowing,
-           isInForeground()
-            || (leftActiveAt.map { Date().timeIntervalSince($0) < Self.inviteSheetBackgroundRapidWindow } ?? false) {
-            return true
-        }
-        return Date().timeIntervalSince(lastRapidPollTrigger) < Self.rapidPollDuration
+        func ms(_ date: Date) -> Int64 { Int64(date.timeIntervalSince1970 * 1000) }
+        let now = Date()
+        let trigger = lastRapidPollTrigger.timeIntervalSince1970 > 0 ? KotlinLong(value: ms(lastRapidPollTrigger)) : nil
+        let state = PollPolicy.State(
+            appForeground: isInForeground(),
+            backgroundedAtMs: leftActiveAt.map { KotlinLong(value: ms($0)) },
+            inviteSheetShowing: isInviteSheetShowing,
+            pendingQrForNaming: false,
+            pendingInitSetAtMs: nil,
+            lastRapidTriggerMs: trigger,
+            awaitingFirstUpdateAtMs: awaitingFirstUpdateIds.values.max().map { KotlinLong(value: ms($0)) }
+        )
+        return PollPolicy.shared.isRapid(state: state, nowMs: ms(now))
     }
 
     func firePoll() async {
