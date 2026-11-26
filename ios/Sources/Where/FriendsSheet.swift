@@ -214,7 +214,7 @@ private struct FriendInfoColumn: View {
                 .foregroundStyle(.secondary)
             let display = friend.displayState(
                 nowSeconds: Int64(Date().timeIntervalSince1970),
-                lastPingSeconds: friend.lastTs,
+                lastPingSeconds: friend.lastSeenSeconds,
                 dimWindowSeconds: PeerDisplayKt.STOPPED_PIN_DIM_WINDOW_SECONDS,
             )
             Text(peerSubtitleText(display))
