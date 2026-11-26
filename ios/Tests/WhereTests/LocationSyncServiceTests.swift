@@ -41,6 +41,8 @@ class LocationSyncServiceTests: XCTestCase {
             onRequestImmediateLocation?()
         }
         func sharingStateChanged() {}
+        var appVisibleCalls: [Bool] = []
+        func setAppVisible(_ visible: Bool) { appVisibleCalls.append(visible) }
         var hasLocationPermission = true
     }
 
@@ -368,6 +370,19 @@ class LocationSyncServiceTests: XCTestCase {
 
     @MainActor
     final class PollTaskBox { var task: Task<Void, Never>? }
+
+    /// The provider learns the app's visibility at init (scenePhase's onChange misses the initial
+    /// phase) and on every foreground/background entry, so heading updates track it.
+    func testProviderToldAppVisibility_AtInitAndOnPhaseChanges() async throws {
+        let provider = MockLocationProvider()
+        let svc = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: nil, locationProvider: provider)
+        XCTAssertEqual(provider.appVisibleCalls.count, 1, "Init reports the initial visibility")
+        svc.onBackgroundEntry()
+        XCTAssertEqual(provider.appVisibleCalls.last, false)
+        svc.onForegroundEntry()
+        XCTAssertEqual(provider.appVisibleCalls.last, true)
+        svc.pollTimer?.invalidate()
+    }
 
     func testPollAllHeartbeat_ConvergesStationaryFlagIntoProvider() async throws {
         let mockClient = MockLocationClient()

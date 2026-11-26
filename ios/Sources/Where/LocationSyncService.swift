@@ -422,6 +422,9 @@ final class LocationSyncService: ObservableObject {
         // The scene-phase onChange doesn't fire for the initial .active, so stamp here only when not
         // in the foreground (a background relaunch); a foreground start is measured from the first real backgrounding.
         leftActiveAt = isInForeground() ? nil : Date()
+        // WhereApp's scenePhase handler doesn't fire for the initial phase, so tell the provider
+        // here (a launch straight into the foreground never gets onForegroundEntry).
+        self.locationProvider.setAppVisible(isInForeground())
     }
 
     func setDisplayName(name: String) {
@@ -666,10 +669,13 @@ final class LocationSyncService: ObservableObject {
     }
 
     func onBackgroundEntry() {
+        locationProvider.setAppVisible(false)
+        ownHeading = nil  // the compass stops: don't re-report a frozen heading
         leftActiveAt = Date()
     }
 
     func onForegroundEntry() {
+        locationProvider.setAppVisible(true)
         leftActiveAt = nil
         guard databaseOpenError == nil else { return }
         // Reset lastPollTime to .distantPast so tick() bypasses its interval guard and fires
