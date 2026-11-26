@@ -842,7 +842,7 @@ class LocationSyncServiceTests: XCTestCase {
     }
 
     func testOpenInviteSheetRapidPollingIsBoundedAfterBackgrounding() async throws {
-        service.isInForeground = { false }
+        service.isInForeground = { true }
         service.isInviteSheetShowing = true
         XCTAssertTrue(service.isRapidPolling())
         // Opening the sheet also stamps the 60 s rapid-poll trigger; clear it so the rest of the
@@ -851,6 +851,7 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertTrue(service.isRapidPolling())
 
         // Sharing the link backgrounds the app: rapid polling holds for the window...
+        service.isInForeground = { false }
         service.onBackgroundEntry()
         XCTAssertTrue(service.isRapidPolling())
         service.leftActiveAt = Date(timeIntervalSinceNow: -60)
