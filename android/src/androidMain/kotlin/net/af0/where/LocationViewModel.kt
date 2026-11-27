@@ -467,8 +467,8 @@ class LocationViewModel(
         // friend list is the cheap early check; E2eeManager.processScannedQr enforces it again
         // under its lock, together with the stored record of consumed invites (which also covers
         // a friend since removed) and reports it as InviteAlreadyAcceptedException. Consumed
-        // records are not imported from the old SharedPreferences store: invites accepted before
-        // this upgrade are forgotten (at most 48 h of exposure, and the inviter has dropped them).
+        // records can't be imported from the old SharedPreferences store (hashed keys), so that
+        // is consulted read-only until its entries lapse (the app's warm-up thread has loaded it).
         if (friends.value.any { it.isFromInvite(qr) }) {
             Log.w(TAG, "processQrUrl: invite already accepted")
             showInviteError(MR.strings.invite_already_used)
@@ -490,7 +490,7 @@ class LocationViewModel(
         viewModelScope.launch {
             val consumed =
                 try {
-                    e2eeManager.isInviteConsumed(qr)
+                    e2eeManager.isInviteConsumed(qr) || LegacyConsumedInvites(getApplication()).contains(qr)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -534,6 +534,10 @@ class LocationViewModel(
         beginExchange()
         viewModelScope.launch {
             try {
+                // The shared manager knows nothing of invites accepted before the upgrade.
+                if (LegacyConsumedInvites(getApplication()).contains(qr)) {
+                    throw InviteAlreadyAcceptedException()
+                }
                 val (initPayload, bobEntry) = e2eeManager.processScannedQr(qrWithName, displayName.value)
                 // Never log routing tokens: they are mailbox read/delete capabilities.
                 Log.d(TAG, "confirmQrScan: processScannedQr succeeded, fingerprint=${bobEntry.id.take(8)}")

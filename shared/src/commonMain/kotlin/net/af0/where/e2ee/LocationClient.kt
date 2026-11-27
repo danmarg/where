@@ -337,7 +337,15 @@ open class LocationClient(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    // Ignore
+                    // The diagnostic write goes to the same database that just failed: it must not
+                    // take the poll down with it.
+                    try {
+                        store.addDiagnosticEvent("cleanupExpiredInvites failed: ${e.message}", coalesceKey = "cleanupExpiredInvites")
+                    } catch (ce: CancellationException) {
+                        throw ce
+                    } catch (_: Exception) {
+                        // Nothing more to do.
+                    }
                 }
             }
 

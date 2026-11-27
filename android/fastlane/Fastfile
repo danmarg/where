@@ -120,6 +120,12 @@ platform :android do
       )
     end
 
+    # An annotated tag on origin must be replaced before anything is built and uploaded: F-Droid
+    # needs a lightweight tag, and a warning after the long upload is easy to miss.
+    if annotated && !force
+      UI.user_error!("#{tag} on origin is annotated; F-Droid needs a lightweight tag. Rerun with FORCE_RETAG=1 to replace it.")
+    end
+
     # HEAD must be deploy's version-bump commit, so the tag lands on the commit Play got, not on
     # unrelated later work (the APKs are built from HEAD, so the tag must be HEAD). FORCE_RETAG=1
     # skips this (e.g. repairing at an older commit).
@@ -169,8 +175,6 @@ platform :android do
     elsif annotated && force
       UI.important("FORCE_RETAG: replacing annotated #{tag} with a lightweight tag at #{head[0, 8]}.")
       sh("git", "push", "--force", "origin", "refs/tags/#{tag}")
-    elsif annotated
-      UI.important("#{tag} on origin is annotated; F-Droid needs a lightweight tag. Rerun with FORCE_RETAG=1 to replace it.")
     elsif remote_tag != head
       UI.important("FORCE_RETAG: moving #{tag} from #{remote_tag[0, 8]} to #{head[0, 8]}.")
       sh("git", "push", "--force", "origin", "refs/tags/#{tag}")

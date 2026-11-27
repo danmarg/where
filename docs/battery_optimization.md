@@ -157,7 +157,8 @@ To maintain parity and predictability across platforms, the following parameters
 | `BACKGROUND_POLL_INTERVAL` | **300.0 seconds (5m)** | Normal background polling and heartbeat rate. |
 | `MAINTENANCE_POLL_INTERVAL` | **1800.0 seconds (30m)** | Polling rate when sharing is paused or no friends exist. |
 | `PUSH_THROTTLE_INTERVAL` | **30.0 seconds** | Software limit for sending location updates. |
-| `MOVEMENT_RADIUS_THRESHOLD` | **200.0 meters** | Distance filter to trigger a movement update. |
+| `MOVEMENT_RADIUS_THRESHOLD` | **200.0 meters** | Distance filter the OS applies to delivered fixes. |
+| `SendPolicy.minDistanceMeters` | **150.0 meters** | Distance from the last *sent* fix that sends before the heartbeat (below the OS filter so a delivered 200 m fix always passes). |
 | `STATIONARY_GEOFENCE_RADIUS` | **200.0 meters** | Android geofence size to detect stationary exit. |
 | `GPS_INTERVAL_FOREGROUND` | **10.0 seconds** | GPS request interval on Android in foreground. |
 | `GPS_INTERVAL_BACKGROUND` | **30.0 seconds** | GPS request interval on Android in background. |

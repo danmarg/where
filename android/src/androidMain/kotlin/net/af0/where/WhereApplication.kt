@@ -77,6 +77,7 @@ open class WhereApplication : Application() {
             userStore
             // Opens and migrates the database; the first touch would otherwise do that on Main.
             e2eeManager
+            LegacyConsumedInvites(this).prune()
         } catch (_: Exception) {
             // Deliberately ignored — see comment above.
         }

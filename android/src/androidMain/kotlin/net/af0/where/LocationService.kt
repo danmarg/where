@@ -984,13 +984,23 @@ class LocationService : Service() {
         coroutineScope {
             val wake = async { locationSource.awaitPollWake(intervalMs) }
             var decideAgain = false
+            var graceArmed = false
             while (!decideAgain && wake.isActive) {
                 select<Unit> {
                     wake.onAwait { }
                     events.onReceive { event ->
                         applyEvent(event)
                         when (val d = decideNow()) {
-                            is ServicePolicy.Decision.Run -> d.graceAlarmInMs?.let { armAlarm(it) }
+                            is ServicePolicy.Decision.Run ->
+                                if (d.graceAlarmInMs != null) {
+                                    armAlarm(d.graceAlarmInMs)
+                                    graceArmed = true
+                                } else if (graceArmed) {
+                                    // The state change ended the grace (sharing on, app visible): put the
+                                    // long safety-net alarm back in place of the short grace one.
+                                    armAlarm(d.alarmInMs)
+                                    graceArmed = false
+                                }
                             // An emptied friend list stops at the next wake, not by cutting the sleep.
                             is ServicePolicy.Decision.Stop ->
                                 if (d.reason != ServicePolicy.StopReason.NO_RELATIONSHIPS) decideAgain = true

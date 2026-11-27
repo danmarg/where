@@ -2,6 +2,7 @@ package net.af0.where
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 
 class PollPolicyTest {
     private val now = 10_000_000L
@@ -28,6 +29,15 @@ class PollPolicyTest {
         init: Long? = null,
         trigger: Long? = null,
     ) = PollPolicy.State(false, at, sheet, naming, init, trigger)
+
+    @Test
+    fun `stamps in the future count as expired`() {
+        // The wall clock stepped back 3 h after each stamp was taken.
+        val ahead = now + 3 * 3_600_000L
+        assertFalse(PollPolicy.isRapid(bg(at = null, trigger = ahead), now))
+        assertFalse(PollPolicy.isRapid(bg(at = null, init = ahead), now))
+        assertFalse(PollPolicy.isRapid(bg(at = ahead, sheet = true), now))
+    }
 
     @Test
     fun `rapid table`() {

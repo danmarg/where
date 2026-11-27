@@ -15,6 +15,9 @@ package net.af0.where
  * [FOREGROUND_INTERVAL_MS] with the app visible, [BACKGROUND_INTERVAL_MS] otherwise.
  */
 object PollPolicy {
+    /** How far ahead of `nowMs` a stamp may be and still count as fresh (concurrent readers). */
+    private const val CLOCK_SKEW_MS = 5_000L
+
     /** Poll interval while [isRapid]: right after pairing / invite activity. */
     const val RAPID_INTERVAL_MS = 2_000L
 
@@ -63,12 +66,17 @@ object PollPolicy {
         state: State,
         nowMs: Long,
     ): Boolean {
-        val recentlyTriggered = state.lastRapidTriggerMs?.let { nowMs - it < RAPID_TRIGGER_WINDOW_MS } ?: false
-        val visibleOrRecent =
-            state.appForeground ||
-                (state.backgroundedAtMs != null && nowMs - state.backgroundedAtMs < BACKGROUND_INVITE_WINDOW_MS)
+        // A stamp well in the future (the wall clock stepped back) counts as expired, not as fresh:
+        // otherwise a clock corrected by hours would hold rapid mode until it caught up. A few
+        // seconds of skew are fine: callers read `nowMs` and stamp on different threads.
+        fun within(
+            stampMs: Long?,
+            windowMs: Long,
+        ) = stampMs != null && nowMs - stampMs in -CLOCK_SKEW_MS until windowMs
+        val recentlyTriggered = within(state.lastRapidTriggerMs, RAPID_TRIGGER_WINDOW_MS)
+        val visibleOrRecent = state.appForeground || within(state.backgroundedAtMs, BACKGROUND_INVITE_WINDOW_MS)
         val sheetOrNaming = visibleOrRecent && (state.inviteSheetShowing || state.pendingQrForNaming)
-        val freshPendingInit = state.pendingInitSetAtMs?.let { nowMs - it < PENDING_INIT_BOUND_MS } ?: false
+        val freshPendingInit = within(state.pendingInitSetAtMs, PENDING_INIT_BOUND_MS)
         return sheetOrNaming || freshPendingInit || recentlyTriggered
     }
 
