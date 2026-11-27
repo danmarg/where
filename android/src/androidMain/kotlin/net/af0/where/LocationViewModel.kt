@@ -747,6 +747,9 @@ class LocationViewModel(
                 } finally {
                     stoppedSharingInFlight = false
                 }
+                // Permission may have returned while the send was in flight, when the check above
+                // saw the flag unset and did nothing: re-check now that it is set (C8).
+                if (getApplication<Application>().hasLocationPermission()) reconcileSharingWithPermission()
             }
         } else if (hasPermission && notified) {
             prefs.edit().putBoolean(KEY_STOPPED_FOR_MISSING_PERMISSION, false).apply()

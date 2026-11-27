@@ -1482,6 +1482,37 @@ class LocationViewModelTest {
         }
 
     @Test
+    fun permissionRegainedDuringStopSend_stillClearsFlagAndResumes() =
+        runTest {
+            val source = TestFakeLocationSource()
+            val client = mockPollingClient()
+            val (vm, userStore) = sharingVm(source, client)
+            viewModel = vm
+            userStore.setSharing(true)
+            // Permission returns while the "stopped sharing" send is in flight: that check sees the
+            // flag still unset and does nothing.
+            coEvery { client.sendStoppedSharing(any()) } coAnswers {
+                shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
+                vm.onLocationPermissionChanged()
+            }
+            source.setAppForeground(true)
+            advanceUntilIdle()
+            var forced = false
+            while (true) {
+                val i = shadowOf(app).nextStartedService ?: break
+                if (i.action == LocationService.ACTION_FORCE_PUBLISH) forced = true
+            }
+            assertTrue(forced, "the flag set after the send must not outlive the regained permission")
+
+            // A later loss is a new event: it must notify again, not be swallowed by a stale flag.
+            shadowOf(app).denyPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
+            coEvery { client.sendStoppedSharing(any()) } returns Unit
+            vm.onLocationPermissionChanged()
+            advanceUntilIdle()
+            coVerify(exactly = 2) { client.sendStoppedSharing(any()) }
+        }
+
+    @Test
     fun onLocationPermissionChanged_withoutForegroundFlip_resumesSharing() =
         runTest {
             val source = TestFakeLocationSource()
