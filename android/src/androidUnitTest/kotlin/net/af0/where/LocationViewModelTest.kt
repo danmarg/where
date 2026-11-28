@@ -890,6 +890,34 @@ class LocationViewModelTest {
             coVerify(exactly = 1) { mockClient.sendStoppedSharingToFriend(friendId) }
         }
 
+    /** C14: after a cold start "last seen" is the persisted receive time, not the sender's GPS ts. */
+    @Test
+    fun coldStartLastSeenUsesPersistedReceiveTime() =
+        runTest {
+            val store = mockk<E2eeManager>(relaxed = true)
+            val friend = mockk<FriendEntry>(relaxed = true)
+            every { friend.id } returns "friend-bob"
+            every { friend.lastLat } returns 1.0
+            every { friend.lastLng } returns 2.0
+            every { friend.lastTs } returns 100L
+            every { friend.lastLocationRecvTs } returns 5_000L
+            every { friend.lastSeenSeconds } returns 5_000L
+            coEvery { store.listFriends() } returns listOf(friend)
+            val source = TestFakeLocationSource()
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeManagerParam = store,
+                    locationClientParam = mockk<LocationClient>(relaxed = true),
+                    locationSourceParam = source,
+                    uiStateStoreParam = FakeUiStateStore(),
+                )
+            advanceUntilIdle()
+
+            assertEquals(5_000_000L, source.friendLastPing.value["friend-bob"])
+            assertEquals(100L, source.friendLocations.value["friend-bob"]?.timestamp)
+        }
+
     /**
      * Regression for #405: an invite shown in person is never "exported", and the scan can land
      * after the sheet is closed (e.g. to scan the other person's QR). Dismissing must keep the

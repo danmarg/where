@@ -224,7 +224,7 @@ class LocationViewModel(
                 val ts = friend.lastTs
                 if (lat != null && lng != null && ts != null) {
                     initialLocations[friend.id] = UserLocation(friend.id, lat, lng, ts)
-                    initialLastPing[friend.id] = ts * 1000L
+                    initialLastPing[friend.id] = (friend.lastSeenSeconds ?: ts) * 1000L
                 }
             }
             locationSource.setInitialFriendLocations(initialLocations, initialLastPing)

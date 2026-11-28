@@ -39,9 +39,9 @@ const val STOPPED_PIN_DIM_WINDOW_SECONDS: Long = 6L * 3600L
 
 /**
  * Single source of truth for how a peer should render. The receive-time
- * `lastPingSeconds` is passed in separately because it isn't on [FriendEntry]
- * (FriendEntry.lastTs is the *sender's* GPS timestamp; for "last seen X ago"
- * we want the wall clock when we received the message).
+ * `lastPingSeconds` is the wall clock when we received the friend's last Location, not
+ * FriendEntry.lastTs (the *sender's* GPS timestamp). Both platforms pass
+ * [FriendEntry.lastSeenSeconds] (persisted) or, on Android, the live receive time.
  */
 fun FriendEntry.displayState(
     nowSeconds: Long,

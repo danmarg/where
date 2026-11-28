@@ -1,15 +1,15 @@
 package net.af0.where
 
 /**
- * How often a client polls its mailboxes, as one pure, platform-free decision (shared so iOS can
- * adopt it; today only Android does). It answers "is something waiting on a fast answer, and so
+ * How often a client polls its mailboxes, as one pure, platform-free decision (shared: Android
+ * and iOS both use it). It answers "is something waiting on a fast answer, and so
  * what is the poll interval?" and nothing else: whether a *service* runs, when it stops and what
  * alarm wakes it are Android's business (`ServicePolicy` in `android/`), which consumes this
  * object's output.
  *
  * Everything is measured on one time base: [isRapid] takes `nowMs` and every timestamp in [State]
  * in the same unit and clock (the Android service uses elapsed-realtime millis, which keeps
- * counting in deep sleep). No clock reads, no coroutines.
+ * counting in deep sleep; iOS uses wall-clock epoch millis). No clock reads, no coroutines.
  *
  * Intervals (CLAUDE.md "Real-time transport"): [RAPID_INTERVAL_MS] while something waits,
  * [FOREGROUND_INTERVAL_MS] with the app visible, [BACKGROUND_INTERVAL_MS] otherwise.
@@ -43,6 +43,15 @@ object PollPolicy {
      */
     const val BACKGROUND_INVITE_WINDOW_MS = 5 * 60 * 1000L
 
+    /** Poll interval with nothing to receive or while not sharing in the background: acks and upkeep only. */
+    const val MAINTENANCE_INTERVAL_MS = 30 * 60 * 1000L
+
+    /**
+     * A newly added friend who hasn't sent a first location keeps rapid mode this long (#336):
+     * long enough for a normal first exchange, short enough not to run rapid forever.
+     */
+    const val AWAITING_FIRST_UPDATE_BOUND_MS = 5 * 60 * 1000L
+
     /** What the decision reads. Timestamps are on the caller's single clock; null means "never". */
     data class State(
         val appForeground: Boolean,
@@ -54,13 +63,16 @@ object PollPolicy {
         val pendingInitSetAtMs: Long? = null,
         /** When rapid polling was last requested; null if never or since reset. */
         val lastRapidTriggerMs: Long? = null,
+        /** When the newest friend still awaiting a first location was added; null if none. */
+        val awaitingFirstUpdateAtMs: Long? = null,
     )
 
     /**
      * True while something needs a fast poll: the share sheet is open or Bob is on the naming
      * screen (visible, or within [BACKGROUND_INVITE_WINDOW_MS] of backgrounding), a fresh incoming
      * invite awaits Alice's confirmation ([PENDING_INIT_BOUND_MS]), or rapid polling was requested
-     * within [RAPID_TRIGGER_WINDOW_MS].
+     * within [RAPID_TRIGGER_WINDOW_MS], or a friend added within [AWAITING_FIRST_UPDATE_BOUND_MS]
+     * has yet to send a first location.
      */
     fun isRapid(
         state: State,
@@ -77,7 +89,8 @@ object PollPolicy {
         val visibleOrRecent = state.appForeground || within(state.backgroundedAtMs, BACKGROUND_INVITE_WINDOW_MS)
         val sheetOrNaming = visibleOrRecent && (state.inviteSheetShowing || state.pendingQrForNaming)
         val freshPendingInit = within(state.pendingInitSetAtMs, PENDING_INIT_BOUND_MS)
-        return sheetOrNaming || freshPendingInit || recentlyTriggered
+        val awaitingFirst = within(state.awaitingFirstUpdateAtMs, AWAITING_FIRST_UPDATE_BOUND_MS)
+        return sheetOrNaming || freshPendingInit || recentlyTriggered || awaitingFirst
     }
 
     /** The poll interval for a client in the given mode. */
@@ -89,6 +102,24 @@ object PollPolicy {
             rapid -> RAPID_INTERVAL_MS
             appForeground -> FOREGROUND_INTERVAL_MS
             else -> BACKGROUND_INTERVAL_MS
+        }
+
+    /**
+     * The interval for a client that also stops polling for locations when nothing is shared (iOS,
+     * whose timer runs in the foreground and whose background wakes read this as a due-date): rapid
+     * and foreground as [intervalMs]; in the background the 5 min cadence only while sharing with a
+     * friend or pending invite, else [MAINTENANCE_INTERVAL_MS].
+     */
+    fun targetIntervalMs(
+        rapid: Boolean,
+        appForeground: Boolean,
+        sharing: Boolean,
+        hasPeers: Boolean,
+    ): Long =
+        when {
+            rapid || appForeground -> intervalMs(rapid, appForeground)
+            hasPeers && sharing -> BACKGROUND_INTERVAL_MS
+            else -> MAINTENANCE_INTERVAL_MS
         }
 
     /**

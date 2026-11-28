@@ -116,38 +116,36 @@ final class LocationSyncService: ObservableObject {
     var isInviteActive: Bool { isInviteSheetShowing }
     var skipUpdateVisibleUsers: Bool = false
 
-    /// When the app entered the .background scene phase; nil once active again. Internal for testing.
+    /// When the app last left (or, until it first becomes active, started outside) the foreground; nil
+    /// while active. Stamped at init when not in the foreground so a relaunch into the background (significant-change
+    /// wake) has its invite-sheet rapid-poll window bounded like PollPolicy's `backgroundedAtMs`; a
+    /// foreground launch is covered by `isInForeground()`. Internal for testing.
     var leftActiveAt: Date?
     var lastRapidPollTrigger: Date = Date(timeIntervalSince1970: 0)  // internal for testing
     var lastPollTime: Date = Date(timeIntervalSince1970: 0)  // internal for testing
     private var lastCleanupTime: Date = Date(timeIntervalSince1970: 0)
     var pollTimer: Timer?  // internal for testing
-    private var isPollInFlight = false
+    /// Token of the poll that owns the single in-flight slot; nil when none. A poll the watchdog
+    /// gave up on no longer owns it (see `pollAll`), so it can't free the slot of, or write over, its successor.
+    private var inFlightPollToken: Int?
+    private var nextPollToken = 0
+    var pollWatchdogTimeout: Duration = .seconds(90)  // internal for testing
+    var isPollInFlight: Bool { inFlightPollToken != nil }  // internal for testing
     /// Overridable in tests to simulate foreground/background without UIKit.
-    var isInForeground: () -> Bool = { UIApplication.shared.applicationState == .active }
-    private static let rapidPollInterval: TimeInterval = 2.0
-    private static let foregroundPollInterval: TimeInterval = 10.0
-    // Target cadence while sharing and backgrounded. NOTE: this is only actually enforced by
-    // a running timer while foregrounded (see startPolling()/tick()) — iOS suspends the run
-    // loop once backgrounded, so tick() simply stops firing. In the background, this value is
-    // consulted only where it's read directly (the heartbeat check in pollAll(), driven by
-    // whatever wakes the process — a BGAppRefreshTask or a CoreLocation callback). Real
-    // background cadence is therefore bounded by those wake sources' own scheduling, which
-    // the OS can and does throttle well past 5 minutes; this constant is a target, not a
-    // guarantee.
-    private static let normalPollInterval: TimeInterval = 300.0 // 5 min (background sharing)
-    private static let maintenancePollInterval: TimeInterval = 30 * 60  // ack-only when not sharing
+    var isInForeground: @MainActor () -> Bool = { UIApplication.shared.applicationState == .active }
+    // Poll cadence (2 s rapid / 10 s foreground / 5 min background while sharing / 30 min ack-only
+    // maintenance) and the rapid-mode windows live in the shared PollPolicy; see targetPollInterval().
+    // The background cadence is only actually enforced by a running timer while foregrounded (see
+    // startPolling()/tick()): iOS suspends the run loop once backgrounded, so tick() simply stops
+    // firing. In the background the interval is consulted only where it's read directly (the
+    // heartbeat check in pollAll(), driven by whatever wakes the process: a BGAppRefreshTask or a
+    // CoreLocation callback). Real background cadence is therefore bounded by those wake sources'
+    // own scheduling, which the OS can and does throttle well past 5 minutes; the interval is a
+    // target, not a guarantee.
     private static let staleLocationThreshold: TimeInterval = 60.0
     /// LocationManager's jitter radius around a stationary geofence center. (How far a fix must
     /// move to be sent is the send scheduler's policy, shared with Android.)
     static let minimumReportingDistanceMeters: CLLocationDistance = 200
-    private static let rapidPollDuration: TimeInterval = 60.0
-    /// How long an open invite sheet keeps rapid polling after the app leaves .active (mirrors Android's 5 min).
-    static let inviteSheetBackgroundRapidWindow: TimeInterval = 300.0
-    /// How long a newly-added friend who hasn't sent their first location update keeps the
-    /// client in rapid (2s) polling. Bounds the impact of a friend who never shares (see #336) -
-    /// long enough for a normal first exchange, short enough not to run rapid mode forever.
-    private static let awaitingFirstUpdateTimeout: TimeInterval = 5 * 60
     /// Even while stationary, force a real GPS fix at this interval instead of only re-reporting
     /// the cached location. CoreMotion's stationary detection and the underlying CLLocationUpdate
     /// stream/geofence (LocationManager) can each independently get stuck with no other path
@@ -186,7 +184,12 @@ final class LocationSyncService: ObservableObject {
         }
         return nil
     }
-    var pendingForcedSendFriendId: String? = nil
+    /// Friends owed a direct first send once a fix is available (new pairings, unpauses with no
+    /// fix); all of them, not one, so two pairings before the first fix both get their send.
+    var pendingForcedSendFriendIds: Set<String> = []
+    /// Throttles the fix request made when a poor fix leaves friends queued.
+    private var lastPendingFixRequest = Date.distantPast
+    nonisolated static let pendingFixRequestInterval: TimeInterval = 30
     var skipNetworkRestore: Bool = false  // internal for testing
 
     /// The only sender of broadcast Locations (shared with Android): this service reports fixes
@@ -406,6 +409,12 @@ final class LocationSyncService: ObservableObject {
             }
         }
         pathMonitor.start(queue: monitorQueue)
+        // The scene-phase onChange doesn't fire for the initial .active, so stamp here only when not
+        // in the foreground (a background relaunch); a foreground start is measured from the first real backgrounding.
+        leftActiveAt = isInForeground() ? nil : Date()
+        // WhereApp's scenePhase handler doesn't fire for the initial phase, so tell the provider
+        // here (a launch straight into the foreground never gets onForegroundEntry).
+        self.locationProvider.setAppVisible(isInForeground())
     }
 
     func setDisplayName(name: String) {
@@ -572,13 +581,19 @@ final class LocationSyncService: ObservableObject {
                     logger.warning("sendStoppedSharingToFriend(\(id)) failed: \(error.localizedDescription)")
                 }
             }
-        } else if let last = locationProvider.lastLocation, canSendLocations() {
-            Task {
-                do {
-                    try await locationClient.sendLocationToFriend(friendId: id, lat: last.coordinate.latitude, lng: last.coordinate.longitude, stationary: locationProvider.isStationary, stamp: stamp)
-                } catch {
-                    logger.warning("sendLocationToFriend(\(id)) on unpause failed: \(error.localizedDescription)")
+        } else if canSendLocations() {
+            if let last = locationProvider.lastLocation {
+                Task {
+                    do {
+                        try await locationClient.sendLocationToFriend(friendId: id, lat: last.coordinate.latitude, lng: last.coordinate.longitude, stationary: locationProvider.isStationary, stamp: stamp)
+                    } catch {
+                        logger.warning("sendLocationToFriend(\(id)) on unpause failed: \(error.localizedDescription)")
+                    }
                 }
+            } else {
+                // No fix yet: send to this friend when the first one arrives (reportLocation).
+                pendingForcedSendFriendIds.insert(id)
+                locationProvider.requestImmediateLocation()
             }
         }
     }
@@ -644,10 +659,13 @@ final class LocationSyncService: ObservableObject {
     }
 
     func onBackgroundEntry() {
+        locationProvider.setAppVisible(false)
+        ownHeading = nil  // the compass stops: don't re-report a frozen heading
         leftActiveAt = Date()
     }
 
     func onForegroundEntry() {
+        locationProvider.setAppVisible(true)
         leftActiveAt = nil
         guard databaseOpenError == nil else { return }
         // Reset lastPollTime to .distantPast so tick() bypasses its interval guard and fires
@@ -676,10 +694,10 @@ final class LocationSyncService: ObservableObject {
     /// iOS suspends this timer on backgrounding rather than merely slowing it, so tick() simply
     /// stops firing; it resumes on the next onForegroundEntry() → startPolling() call. Background
     /// cadence instead depends entirely on BGAppRefreshTask and CoreLocation wake sources (see
-    /// normalPollInterval's comment) — this timer contributes nothing there.
+    /// targetPollInterval()'s comment) — this timer contributes nothing there.
     func startPolling() {
         pollTimer?.invalidate()
-        // 1Hz, matching rapidPollInterval's timescale but deliberately not equal to it: ticking
+        // 1Hz, matching PollPolicy.RAPID_INTERVAL_MS's timescale but deliberately not equal to it: ticking
         // at exactly the same interval as the shortest target interval this drives against
         // aliases against tick()'s elapsed-time check (the two timestamps are offset by an
         // async hop's worth of delay), causing the check to miss roughly half the time and
@@ -711,25 +729,34 @@ final class LocationSyncService: ObservableObject {
 
     @MainActor
     func targetPollInterval() -> TimeInterval {
-        if isRapidPolling() { return Self.rapidPollInterval }
-        if isInForeground() { return Self.foregroundPollInterval }
-        if repo.friends.isEmpty && repo.pendingInvites.isEmpty { return Self.maintenancePollInterval }
-        return isSharingLocation ? Self.normalPollInterval : Self.maintenancePollInterval
+        let ms = PollPolicy.shared.targetIntervalMs(
+            rapid: isRapidPolling(),
+            appForeground: isInForeground(),
+            sharing: isSharingLocation,
+            hasPeers: !repo.friends.isEmpty || !repo.pendingInvites.isEmpty
+        )
+        return TimeInterval(ms) / 1000
     }
 
+    /// Feeds the shared PollPolicy this service's inputs (all stamped as Dates, converted to epoch
+    /// ms on one clock). `leftActiveAt` is stamped at process start and on the .background scene
+    /// phase (not .inactive blips) and cleared on .active; nil with the app not in the foreground
+    /// is not "visible". A zero `lastRapidPollTrigger` means "never".
     @MainActor
     func isRapidPolling() -> Bool {
-        if awaitingFirstUpdateIds.values.contains(where: { Date().timeIntervalSince($0) < Self.awaitingFirstUpdateTimeout }) {
-            return true
-        }
-        // While visible and for a bounded window after the app went to the background (sharing the
-        // link leaves the app just as the friend scans). A sheet left open must not poll at 2 s forever.
-        // leftActiveAt is set on the .background scene phase (not .inactive blips) and cleared on .active.
-        if isInviteSheetShowing,
-           leftActiveAt.map({ Date().timeIntervalSince($0) < Self.inviteSheetBackgroundRapidWindow }) ?? true {
-            return true
-        }
-        return Date().timeIntervalSince(lastRapidPollTrigger) < Self.rapidPollDuration
+        func ms(_ date: Date) -> Int64 { Int64(date.timeIntervalSince1970 * 1000) }
+        let now = Date()
+        let trigger = lastRapidPollTrigger.timeIntervalSince1970 > 0 ? KotlinLong(value: ms(lastRapidPollTrigger)) : nil
+        let state = PollPolicy.State(
+            appForeground: isInForeground(),
+            backgroundedAtMs: leftActiveAt.map { KotlinLong(value: ms($0)) },
+            inviteSheetShowing: isInviteSheetShowing,
+            pendingQrForNaming: false,
+            pendingInitSetAtMs: nil,
+            lastRapidTriggerMs: trigger,
+            awaitingFirstUpdateAtMs: awaitingFirstUpdateIds.values.max().map { KotlinLong(value: ms($0)) }
+        )
+        return PollPolicy.shared.isRapid(state: state, nowMs: ms(now))
     }
 
     func firePoll() async {
@@ -783,17 +810,22 @@ final class LocationSyncService: ObservableObject {
 
     func pollAll(updateUi: Bool = true, source: WakeSource = .timer) async {
         if isPollInFlight || databaseOpenError != nil { return }
-        isPollInFlight = true
+        nextPollToken += 1
+        let token = nextPollToken
+        inFlightPollToken = token
         lastPollTime = Date()
+        // False once the watchdog has released this poll's slot (a newer poll may be running).
+        let ownsPoll = { [weak self] in self?.inFlightPollToken == token }
 
         // Watchdog: if the KMP coroutine hangs without returning or throwing (e.g. stalled
         // socket that never reaches a cancellation checkpoint), the defer block never fires and
-        // isPollInFlight would stick permanently. Reset it after 90s regardless.
+        // the slot would stick permanently. Release it after 90s regardless, and only if this
+        // poll still owns it; the stuck poll then drops its results instead of racing the next one.
         let watchdog = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(90))
-            guard let self, self.isPollInFlight else { return }
-            logger.warning("pollAll: watchdog resetting stuck isPollInFlight")
-            self.isPollInFlight = false
+            try? await Task.sleep(for: self?.pollWatchdogTimeout ?? .seconds(90))
+            guard let self, self.inFlightPollToken == token else { return }
+            logger.warning("pollAll: watchdog releasing stuck poll")
+            self.inFlightPollToken = nil
         }
         logger.debug("Polling for location updates (updateUi=\(updateUi), source=\(source.rawValue))")
 
@@ -814,7 +846,8 @@ final class LocationSyncService: ObservableObject {
 
         defer {
             watchdog.cancel()
-            isPollInFlight = false
+            // Only the owner frees the slot: a stale poll finishing late must not clear its successor's.
+            if inFlightPollToken == token { inFlightPollToken = nil }
             backgroundTask.end()
         }
         do {
@@ -824,6 +857,8 @@ final class LocationSyncService: ObservableObject {
                 sharingEnabled: canSendLocations(),
             )
             logger.debug("Got \(updates.count) location updates")
+            // Once per received update, and these are already persisted and acked by poll(), so
+            // they run even if this poll has since lost its slot: nothing would re-deliver them.
             for update in updates {
                 // Location/stationary/stopped state lives on FriendEntry rows (persisted by
                 // E2eeManager.processBatch, which stores each batch's newest Location).
@@ -831,10 +866,19 @@ final class LocationSyncService: ObservableObject {
                 // no parallel store to update here.
                 onFriendLocationReceived(friendId: update.userId)
             }
+            // Past here is the UI snapshot, status and sends: only the poll that owns the slot
+            // may do them, so a stale one can't write over its successor.
+            guard ownsPoll() else {
+                logger.warning("pollAll: stale poll (watchdog released it); skipping its UI refresh")
+                return
+            }
 
-            repo.friends = try await e2eeManager.listFriends()
+            let friends = try await e2eeManager.listFriends()
+            let pendingInvites = try await e2eeManager.listPendingInvites()
+            guard ownsPoll() else { return }
+            repo.friends = friends
             repo.diagnosticLog = e2eeManager.diagnosticLogSnapshot()
-            repo.pendingInvites = try await e2eeManager.listPendingInvites()
+            repo.pendingInvites = pendingInvites
             // Always update visibleUsers to ensure map is fresh when returning to foreground.
             updateVisibleUsers()
 
@@ -846,6 +890,7 @@ final class LocationSyncService: ObservableObject {
             if updateUi || isInviteSheetShowing {
                 _ = try await pollPendingInvites()
             }
+            if !ownsPoll() { return }
             if backgroundTask.didExpire || Task.isCancelled {
                 logger.warning("pollAll: background time expired; skipping heartbeat")
                 updateStatus(nil)  // the poll itself succeeded
@@ -859,6 +904,7 @@ final class LocationSyncService: ObservableObject {
             logger.info("pollAll: sharing=\(self.isSharingLocation) heartbeatDue=\(heartbeatDue)")
             if canSendLocations() && heartbeatDue {
                 let stationary = await isStationaryQuery()
+                if !ownsPoll() { return }
                 // Converge CoreMotion result into the provider's cached flag so
                 // background-entry and network-restore sends read a consistent value.
                 locationProvider.isStationary = stationary
@@ -884,6 +930,7 @@ final class LocationSyncService: ObservableObject {
                         // landing just after would be held back by the send interval, and on a
                         // background wake we'd be suspended before it went out.
                         if let fresh = try await awaitFreshFix(since: now) { fix = fresh }
+                        if !ownsPoll() { return }
                     } else if now.timeIntervalSince(lastFixRequestWithoutFallback) >= Self.fixRequestWithoutFallbackInterval {
                         // No usable fix at all (e.g. approximate location): ask for one, but don't
                         // hold up this poll waiting - the heartbeat stays due until one arrives.
@@ -901,13 +948,15 @@ final class LocationSyncService: ObservableObject {
                 }
             }
 
-            updateStatus(nil)
+            if ownsPoll() { updateStatus(nil) }
         } catch is CancellationError {
             // The wake's task was cancelled (BGTask expiry): stop here. Not a network failure,
             // so the status is left alone; the next poll resumes.
             logger.warning("pollAll: cancelled")
         } catch {
             logger.error("Poll failed: \(error.localizedDescription)")
+            // A stale poll's failure says nothing about the current one.
+            guard ownsPoll() else { return }
             updateStatus(error)
             // The success path above is the only other place this refreshes - without this,
             // a poll failure (the case you most want visibility into) leaves the Events log
@@ -1033,9 +1082,18 @@ final class LocationSyncService: ObservableObject {
                 return
             }
 
-            await clearInvite()
-            // Insert AFTER clearInvite: clearInvite calls resetRapidPoll which clears
-            // awaitingFirstUpdateIds, so inserting before it is a no-op.
+            // Not clearInvite(): it falls back to pendingInitAliceEkPub, which a rapid poll
+            // triggered above may have just set from a scan of our own invite (mutual scan),
+            // and that unrelated pairing would be deleted. The UI state was reset at the top.
+            resetRapidPoll()
+            do {
+                repo.pendingInvites = try await e2eeManager.listPendingInvites()
+            } catch {
+                logger.error("Failed to refresh pending invites after scan: \(error.localizedDescription)")
+            }
+            locationProvider.sharingStateChanged()
+            // Insert AFTER resetRapidPoll, which clears awaitingFirstUpdateIds, so inserting
+            // before it is a no-op.
             awaitingFirstUpdateIds[bobEntry.id] = Date()
             repo.friends = try await e2eeManager.listFriends()
             updateVisibleUsers()
@@ -1051,13 +1109,13 @@ final class LocationSyncService: ObservableObject {
                     // Proactively send our first location update to Alice to trigger confirmation on her side.
                     // We use sendLocationToFriend here to bypass the !isConfirmed check in sendLocation().
                     do {
-                        try await locationClient.sendLocationToFriend(friendId: bobEntry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude, stationary: false, stamp: stamp)
+                        try await locationClient.sendLocationToFriend(friendId: bobEntry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude, stationary: locationProvider.isStationary, stamp: stamp)
                     } catch {
                         logger.error("Failed to send proactive location update to \(bobEntry.id): \(error.localizedDescription)")
                     }
                 } else {
                     logger.debug("confirmQrScan: lastLocation is nil, deferring the pairing send to the first fix")
-                    self.pendingForcedSendFriendId = bobEntry.id
+                    self.pendingForcedSendFriendIds.insert(bobEntry.id)
                     locationProvider.requestPermissionAndStart()
                 }
                 await pollAll(updateUi: true)
@@ -1106,12 +1164,12 @@ final class LocationSyncService: ObservableObject {
                 if let last = locationProvider.lastLocation, canSendLocations() {
                     // Proactively send our first location update to Bob to trigger confirmation on his side.
                     do {
-                        try await locationClient.sendLocationToFriend(friendId: entry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude, stationary: false, stamp: stamp)
+                        try await locationClient.sendLocationToFriend(friendId: entry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude, stationary: locationProvider.isStationary, stamp: stamp)
                     } catch {
                         logger.error("Failed to send reactive location update to \(entry.id): \(error.localizedDescription)")
                     }
                 } else {
-                    self.pendingForcedSendFriendId = entry.id
+                    self.pendingForcedSendFriendIds.insert(entry.id)
                     locationProvider.requestPermissionAndStart()
                 }
             }
@@ -1148,6 +1206,8 @@ final class LocationSyncService: ObservableObject {
     }
 
     func removeFriend(id: String) async {
+        // Before the awaits: a fix arriving meanwhile must not send to the friend being removed.
+        pendingForcedSendFriendIds.remove(id)
         do {
             // Queues a StoppedSharing (if we were sharing with them) and deletes them locally;
             // it's delivered below, after the UI has updated, or by a later poll.
@@ -1186,24 +1246,42 @@ final class LocationSyncService: ObservableObject {
         guard canSendLocations() else { return }
         ownHeading = heading
         lastReportSource = source
-        if accuracy.map({ $0 >= 0 && $0 <= Self.minBroadcastAccuracyMeters }) ?? true {
+        let accuracyUsable = accuracy.map { $0 >= 0 && $0 <= Self.minBroadcastAccuracyMeters } ?? true
+        if accuracyUsable {
             lastReportedLocation = (lat: lat, lng: lng)
         }
 
         // If a friend-specific send is pending (set when location was unavailable at pairing
         // time), send it now: per-friend sends aren't broadcasts and don't go through the
         // scheduler, so the newly-paired peer gets our location whatever its interval says.
-        if let friendId = pendingForcedSendFriendId {
-            pendingForcedSendFriendId = nil
-            // The friend may have been paused while this send waited for a fix.
-            if effectivelyPausedIds().contains(friendId) {
-                logger.info("Skipping forced pairing send: \(friendId) is paused")
-            } else {
-                // Before reading the sharing state: a stop issued after it drops the send.
-                let stamp = locationClient.sharingStamp()
+        // Only a fix the scheduler would broadcast (accurate enough) is sent: a poor one (a visit
+        // or stationary fix kilometres off) leaves the ids queued for the next fix.
+        if !accuracyUsable && !pendingForcedSendFriendIds.isEmpty {
+            // Ask for a better fix, at most once per interval: the one-shot's result is only
+            // reported when accurate enough, but other sources could report poor fixes repeatedly.
+            if Date().timeIntervalSince(lastPendingFixRequest) >= Self.pendingFixRequestInterval {
+                lastPendingFixRequest = Date()
+                locationProvider.requestImmediateLocation()
+            }
+        }
+        if accuracyUsable && !pendingForcedSendFriendIds.isEmpty {
+            // Every queued id is attempted, whether or not repo.friends has caught up with the
+            // pairing yet (its refresh lags): a removed friend's id was dropped by removeFriend,
+            // and a send to an unknown id fails and is logged.
+            let friendIds = pendingForcedSendFriendIds
+            pendingForcedSendFriendIds.removeAll()
+            let stationary = locationProvider.isStationary
+            // Before reading the sharing state: a stop issued after it drops the send.
+            let stamp = locationClient.sharingStamp()
+            for friendId in friendIds {
+                // The friend may have been paused while this send waited for a fix.
+                if effectivelyPausedIds().contains(friendId) {
+                    logger.info("Skipping forced pairing send: \(friendId) is paused")
+                    continue
+                }
                 Task {
                     do {
-                        try await locationClient.sendLocationToFriend(friendId: friendId, lat: lat, lng: lng, stationary: false, stamp: stamp)
+                        try await locationClient.sendLocationToFriend(friendId: friendId, lat: lat, lng: lng, stationary: stationary, stamp: stamp)
                     } catch {
                         logger.error("Failed forced pairing send to \(friendId): \(error.localizedDescription)")
                     }

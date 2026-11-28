@@ -79,7 +79,7 @@ func updateUIView(_ mapView: MKMapView, context: Context) {
         for (_, group) in locationGroups {
             for (index, user) in group.enumerated() {
                 let entry = friendsById[user.userId]
-                let lastPingSec: KotlinLong? = entry?.lastTs
+                let lastPingSec: KotlinLong? = entry?.lastSeenSeconds
                 let display: Shared.PeerDisplay
                 if let entry = entry {
                     display = entry.displayState(
@@ -102,7 +102,7 @@ func updateUIView(_ mapView: MKMapView, context: Context) {
                     coord.longitude += radius * sin(angle)
                 }
                 let friendName = entry?.name ?? String(user.userId.prefix(8))
-                let lastPing = entry?.lastTs.map { Date(timeIntervalSince1970: TimeInterval($0.int64Value)) }
+                let lastPing = lastPingSec.map { Date(timeIntervalSince1970: TimeInterval($0.int64Value)) }
                 let subtitle = peerSubtitleText(display)
                 let dimmed = display.pinStyle == .dimmed
                 if let pin = existingById[user.userId] {
