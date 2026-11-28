@@ -52,6 +52,11 @@ data class FriendEntry(
     val stationarySinceTs: Long? = null,
     /** Epoch-seconds the peer sent StoppedSharing. Null when sharing or after they resume. */
     val stoppedAtTs: Long? = null,
+    /**
+     * Epoch-seconds *we* last received a Location from this friend (our clock, not the sender's
+     * [lastTs]). Null for friends stored before it was recorded; see [lastSeenSeconds].
+     */
+    val lastLocationRecvTs: Long? = null,
 ) {
     companion object {
         /**
@@ -69,6 +74,12 @@ data class FriendEntry(
          */
         const val REPAIR_WARNING_MARGIN_SECONDS = 2 * 24 * 3600L
     }
+
+    /**
+     * "Last seen" for display: when we received their last Location, falling back to the sender's
+     * GPS time ([lastTs]) for entries stored before [lastLocationRecvTs] existed.
+     */
+    val lastSeenSeconds: Long? get() = lastLocationRecvTs ?: lastTs
 
     /**
      * Nothing received from this friend for [INACTIVITY_PAUSE_SECONDS]: we stop sending to them
@@ -606,6 +617,8 @@ class E2eeManager(
                     lastLat = if (lastLocation != null && (lastLocation.ts >= storedLastTs)) lastLocation.lat else entry.lastLat,
                     lastLng = if (lastLocation != null && (lastLocation.ts >= storedLastTs)) lastLocation.lng else entry.lastLng,
                     lastTs = if (lastLocation != null && (lastLocation.ts >= storedLastTs)) lastLocation.ts else entry.lastTs,
+                    // Moves with the shown position: an older, out-of-order Location doesn't make it "just seen".
+                    lastLocationRecvTs = if (lastLocation != null && (lastLocation.ts >= storedLastTs)) nowTs else entry.lastLocationRecvTs,
                     lastPollTs = currentTimeSeconds(),
                     // A non-empty batch means the mailbox may hold more: only the poll that ends
                     // it (an empty GET, or a short page fully acked; see updatePollState) says

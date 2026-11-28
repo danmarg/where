@@ -257,6 +257,7 @@ internal class E2eeStore(
             version = nextVersion.toLong(),
             stationarySinceTs = finalEntry.stationarySinceTs,
             stoppedAtTs = finalEntry.stoppedAtTs,
+            lastLocationRecvTs = finalEntry.lastLocationRecvTs,
         )
         return finalEntry
     }
@@ -337,6 +338,7 @@ internal class E2eeStore(
             version = version.toInt(),
             stationarySinceTs = stationarySinceTs,
             stoppedAtTs = stoppedAtTs,
+            lastLocationRecvTs = lastLocationRecvTs,
         )
 
     private fun net.af0.where.db.PendingInvites.toInvite() =

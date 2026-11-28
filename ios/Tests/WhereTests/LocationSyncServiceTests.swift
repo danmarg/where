@@ -41,6 +41,8 @@ class LocationSyncServiceTests: XCTestCase {
             onRequestImmediateLocation?()
         }
         func sharingStateChanged() {}
+        var appVisibleCalls: [Bool] = []
+        func setAppVisible(_ visible: Bool) { appVisibleCalls.append(visible) }
         var hasLocationPermission = true
     }
 
@@ -90,7 +92,9 @@ class LocationSyncServiceTests: XCTestCase {
             lastLat = lat
             sendLocationCallback?()
         }
+        var lastFriendStationary: Bool? = nil
         func sendLocationToFriend(friendId: String, lat: Double, lng: Double, stationary: Bool, stamp: Int64) async throws {
+            lastFriendStationary = stationary
             sendLocationToFriendCallback?(friendId)
             sendLocationCallback?()
         }
@@ -111,9 +115,12 @@ class LocationSyncServiceTests: XCTestCase {
             processOrphanedOutboxesCallCount += 1
         }
         var onPoll: (@MainActor () -> Void)?
+        /// Each queued gate suspends one poll() call (in order) until the test resumes it.
+        var pollGates: [() async throws -> Void] = []
         var lastPollSharingEnabled: Bool?
         func poll(isForeground: Bool, pausedFriendIds: Set<String>, sharingEnabled: Bool) async throws -> [Shared.UserLocation] {
             _pollCallCount += 1
+            if !pollGates.isEmpty { try await pollGates.removeFirst()() }
             lastPollSharingEnabled = sharingEnabled
             onPoll?()
             return pollResult
@@ -363,6 +370,19 @@ class LocationSyncServiceTests: XCTestCase {
 
     @MainActor
     final class PollTaskBox { var task: Task<Void, Never>? }
+
+    /// The provider learns the app's visibility at init (scenePhase's onChange misses the initial
+    /// phase) and on every foreground/background entry, so heading updates track it.
+    func testProviderToldAppVisibility_AtInitAndOnPhaseChanges() async throws {
+        let provider = MockLocationProvider()
+        let svc = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: nil, locationProvider: provider)
+        XCTAssertEqual(provider.appVisibleCalls.count, 1, "Init reports the initial visibility")
+        svc.onBackgroundEntry()
+        XCTAssertEqual(provider.appVisibleCalls.last, false)
+        svc.onForegroundEntry()
+        XCTAssertEqual(provider.appVisibleCalls.last, true)
+        svc.pollTimer?.invalidate()
+    }
 
     func testPollAllHeartbeat_ConvergesStationaryFlagIntoProvider() async throws {
         let mockClient = MockLocationClient()
@@ -733,6 +753,101 @@ class LocationSyncServiceTests: XCTestCase {
             "onForegroundEntry must reset lastPollTime so the stuck-poll guard fires immediately")
     }
 
+    /// Parks a mock poll() until the test opens it; lets the test order events without sleeping.
+    @MainActor
+    final class PollGate {
+        private var continuation: CheckedContinuation<Void, Never>?
+        var isWaiting: Bool { continuation != nil }
+        func wait() async { await withCheckedContinuation { continuation = $0 } }
+        func open() { continuation?.resume(); continuation = nil }
+    }
+
+    private func waitUntil(_ what: String, timeout: TimeInterval = 5, _ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() > deadline { XCTFail("timed out waiting for \(what)"); throw CancellationError() }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    /// Poll 1 hangs in poll() and the watchdog releases it; poll 2 then takes the slot and hangs too.
+    /// Returns both tasks and gates, with poll 1 still parked (about to finish stale, optionally by throwing).
+    private func startStalePollAndSuccessor(
+        _ mockClient: MockLocationClient, firstError: Error? = nil
+    ) async throws -> (first: Task<Void, Never>, second: Task<Void, Never>, gate1: PollGate, gate2: PollGate) {
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
+        service.pollWatchdogTimeout = .milliseconds(20)
+        let gate1 = PollGate()
+        let gate2 = PollGate()
+        mockClient.pollGates = [
+            { await gate1.wait(); if let firstError { throw firstError } },
+            { await gate2.wait() },
+        ]
+        let svc = service!
+        let first = Task { @MainActor in await svc.pollAll() }
+        try await waitUntil("poll 1 to reach poll()") { gate1.isWaiting }
+        try await waitUntil("the watchdog to release poll 1") { !svc.isPollInFlight }
+        // Poll 2 must hold its slot for the whole test: only poll 1 is meant to be released early.
+        svc.pollWatchdogTimeout = .seconds(90)
+        let second = Task { @MainActor in await svc.pollAll() }
+        try await waitUntil("poll 2 to reach poll()") { gate2.isWaiting }
+        XCTAssertEqual(mockClient.pollCallCount, 2)
+        return (first, second, gate1, gate2)
+    }
+
+    func testStalePollAfterWatchdogDoesNotFreeItsSuccessorsSlot() async throws {
+        let mockClient = MockLocationClient()
+        let p = try await startStalePollAndSuccessor(mockClient)
+
+        // The stale poll finishes now. It must not free poll 2's slot...
+        p.gate1.open()
+        await p.first.value
+        XCTAssertTrue(service.isPollInFlight)
+        await service.pollAll()
+        XCTAssertEqual(mockClient.pollCallCount, 2,
+            "a stale poll finishing late must not let a third poll start alongside the second")
+
+        // ...which frees it itself when it finishes.
+        p.gate2.open()
+        await p.second.value
+        XCTAssertFalse(service.isPollInFlight)
+        await service.pollAll()
+        XCTAssertEqual(mockClient.pollCallCount, 3)
+    }
+
+    func testStalePollFailureDoesNotChangeStatus() async throws {
+        let mockClient = MockLocationClient()
+        let p = try await startStalePollAndSuccessor(mockClient, firstError: NSError(domain: "test", code: 1))
+        service.connectionStatus = Shared.ConnectionStatus.Ok()
+
+        p.gate1.open()
+        await p.first.value
+
+        XCTAssertTrue(service.connectionStatus is Shared.ConnectionStatus.Ok,
+            "a stale poll's failure must not overwrite the status the current poll owns")
+        p.gate2.open()
+        await p.second.value
+    }
+
+    func testStalePollStillClearsAwaitingFirstUpdateForAckedUpdates() async throws {
+        let mockClient = MockLocationClient()
+        mockClient.pollResult = [Shared.UserLocation(userId: "friend", lat: 1.0, lng: 2.0, timestamp: 123)]
+        let p = try await startStalePollAndSuccessor(mockClient)
+        service.awaitingFirstUpdateIds = ["friend": Date()]
+
+        // poll() already persisted and acked this update, so losing the slot must not lose its
+        // once-only effect: nothing would deliver it again.
+        p.gate1.open()
+        await p.first.value
+
+        XCTAssertNil(service.awaitingFirstUpdateIds["friend"])
+        p.gate2.open()
+        await p.second.value
+    }
+
     func testIsRapidPolling() async throws {
         service.lastRapidPollTrigger = Date(timeIntervalSinceNow: -10)
         let isRapid1 = service.isRapidPolling()
@@ -744,6 +859,7 @@ class LocationSyncServiceTests: XCTestCase {
     }
 
     func testOpenInviteSheetRapidPollingIsBoundedAfterBackgrounding() async throws {
+        service.isInForeground = { true }
         service.isInviteSheetShowing = true
         XCTAssertTrue(service.isRapidPolling())
         // Opening the sheet also stamps the 60 s rapid-poll trigger; clear it so the rest of the
@@ -752,17 +868,41 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertTrue(service.isRapidPolling())
 
         // Sharing the link backgrounds the app: rapid polling holds for the window...
+        service.isInForeground = { false }
         service.onBackgroundEntry()
         XCTAssertTrue(service.isRapidPolling())
         service.leftActiveAt = Date(timeIntervalSinceNow: -60)
         XCTAssertTrue(service.isRapidPolling())
 
         // ...then ends, so a forgotten sheet can't poll at 2 s forever.
-        service.leftActiveAt = Date(timeIntervalSinceNow: -(LocationSyncService.inviteSheetBackgroundRapidWindow + 1))
+        service.leftActiveAt = Date(timeIntervalSinceNow: -(Double(PollPolicy.shared.BACKGROUND_INVITE_WINDOW_MS) / 1000 + 1))
         XCTAssertFalse(service.isRapidPolling())
 
         // Returning to the foreground re-arms it.
+        service.isInForeground = { true }
         service.onForegroundEntry()
+        XCTAssertTrue(service.isRapidPolling())
+    }
+
+    func testInviteSheetRapidPollingIsBoundedAfterBackgroundRelaunch() async throws {
+        // Relaunched into the background (significant-change wake): no .background scene phase was
+        // ever seen, so the window must already run from process start rather than be unbounded.
+        service.isInForeground = { false }
+        service.isInviteSheetShowing = true
+        service.lastRapidPollTrigger = Date(timeIntervalSince1970: 0)
+        // init stamps leftActiveAt when not in the foreground; stand in for that here.
+        service.leftActiveAt = Date()
+        XCTAssertTrue(service.isRapidPolling())
+
+        service.leftActiveAt = Date(timeIntervalSinceNow: -(Double(PollPolicy.shared.BACKGROUND_INVITE_WINDOW_MS) / 1000 + 1))
+        XCTAssertFalse(service.isRapidPolling(), "a sheet flag left set across a background relaunch must stop rapid polling")
+
+        // Unknown (never stamped) while not in the foreground is not "visible" either.
+        service.leftActiveAt = nil
+        XCTAssertFalse(service.isRapidPolling())
+
+        // A foreground launch never sees a scene-phase change, but is visible, so it stays rapid.
+        service.isInForeground = { true }
         XCTAssertTrue(service.isRapidPolling())
     }
 
@@ -1027,8 +1167,9 @@ class LocationSyncServiceTests: XCTestCase {
         service.beginBackgroundTask = { _, _ in .invalid }
         service.endBackgroundTask = { _ in }
 
-        let expectedFriendId = "friend-bob-456"
-        service.pendingForcedSendFriendId = expectedFriendId
+        try await addFriend()
+        let expectedFriendId = try XCTUnwrap(service.repo.friends.first?.id)
+        service.pendingForcedSendFriendIds = [expectedFriendId]
 
         class StringBox: @unchecked Sendable {
             private let lock = NSLock()
@@ -1048,8 +1189,124 @@ class LocationSyncServiceTests: XCTestCase {
 
         XCTAssertEqual(capturedFriendIdBox.get(), expectedFriendId,
             "reportLocation must fire sendLocationToFriend for the pending friend ID set during pairing")
-        XCTAssertNil(service.pendingForcedSendFriendId,
-            "pendingForcedSendFriendId must be cleared after the forced send fires")
+        XCTAssertTrue(service.pendingForcedSendFriendIds.isEmpty,
+            "pendingForcedSendFriendIds must be cleared after the forced send fires")
+    }
+
+    /// Two friends paired before the first fix: both get their first send (a single slot kept one).
+    func testReportLocation_ForcedSendReachesEveryPendingFriend() async throws {
+        let mockClient = MockLocationClient()
+        let svc = serviceWithFix(mockClient)
+        try await addFriend()
+        try await addFriend()
+        let ids = Set(svc.repo.friends.map { $0.id })
+        XCTAssertEqual(ids.count, 2)
+        svc.pendingForcedSendFriendIds = ids
+
+        class IdsBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var ids = Set<String>()
+            func add(_ v: String) { lock.lock(); defer { lock.unlock() }; ids.insert(v) }
+            func get() -> Set<String> { lock.lock(); defer { lock.unlock() }; return ids }
+        }
+        let sentIds = IdsBox()
+        let both = XCTestExpectation(description: "Both friends get a send")
+        both.expectedFulfillmentCount = 2
+        mockClient.sendLocationToFriendCallback = { friendId in
+            sentIds.add(friendId)
+            both.fulfill()
+        }
+
+        svc.reportLocation(lat: 37.0, lng: -122.0, accuracy: 10)
+        await fulfillment(of: [both], timeout: 1.0)
+
+        XCTAssertEqual(sentIds.get(), ids)
+        XCTAssertTrue(svc.pendingForcedSendFriendIds.isEmpty)
+    }
+
+    /// A poor-accuracy fix (a visit or stationary fix) is not sent to a pending friend, who stays
+    /// queued; the next good fix sends with the provider's real stationary state.
+    func testReportLocation_PoorAccuracyFixKeepsPendingFriendQueued() async throws {
+        let mockClient = MockLocationClient()
+        let svc = serviceWithFix(mockClient)
+        try await addFriend()
+        let friendId = try XCTUnwrap(svc.repo.friends.first?.id)
+        svc.pendingForcedSendFriendIds = [friendId]
+        mockLocationProvider.isStationary = true
+
+        let sent = XCTestExpectation(description: "Pending friend sent on the good fix")
+        sent.assertForOverFulfill = true
+        let poor = XCTestExpectation(description: "No send on the poor fix")
+        poor.isInverted = true
+        mockClient.sendLocationToFriendCallback = { _ in poor.fulfill() }
+
+        svc.reportLocation(lat: 37.0, lng: -122.0, accuracy: LocationSyncService.minBroadcastAccuracyMeters + 1000)
+        svc.reportLocation(lat: 37.0, lng: -122.0, accuracy: -1)
+        await fulfillment(of: [poor], timeout: 0.3)
+        XCTAssertEqual(svc.pendingForcedSendFriendIds, [friendId], "a poor fix must leave the friend queued")
+
+        mockClient.sendLocationToFriendCallback = { _ in sent.fulfill() }
+        svc.reportLocation(lat: 37.0, lng: -122.0, accuracy: 10)
+        await fulfillment(of: [sent], timeout: 1.0)
+        XCTAssertTrue(svc.pendingForcedSendFriendIds.isEmpty)
+        XCTAssertEqual(mockClient.lastFriendStationary, true,
+            "the deferred send must carry the provider's stationary state, not a hardcoded false")
+    }
+
+    /// A friend removed while the send waited for a fix is not sent a location.
+    func testReportLocation_SendsToQueuedIdsEvenIfFriendsListLags() async throws {
+        let mockClient = MockLocationClient()
+        let svc = serviceWithFix(mockClient)
+        try await addFriend()
+        let friendId = try XCTUnwrap(svc.repo.friends.first?.id)
+        svc.pendingForcedSendFriendIds = [friendId, "removed-friend"]
+
+        let sent = XCTestExpectation(description: "Every queued id is sent")
+        sent.expectedFulfillmentCount = 2
+        sent.assertForOverFulfill = true
+        class IdsBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var ids = [String]()
+            func add(_ v: String) { lock.lock(); defer { lock.unlock() }; ids.append(v) }
+            func get() -> [String] { lock.lock(); defer { lock.unlock() }; return ids }
+        }
+        let sentIds = IdsBox()
+        mockClient.sendLocationToFriendCallback = { id in
+            sentIds.add(id)
+            sent.fulfill()
+        }
+
+        svc.reportLocation(lat: 37.0, lng: -122.0, accuracy: 10)
+        await fulfillment(of: [sent], timeout: 1.0)
+
+        // "removed-friend" stands for a pairing repo.friends hasn't caught up with: it is still sent.
+        XCTAssertEqual(Set(sentIds.get()), [friendId, "removed-friend"])
+        XCTAssertTrue(svc.pendingForcedSendFriendIds.isEmpty)
+    }
+
+    /// removeFriend drops the friend's queued send.
+    func testRemoveFriend_DropsQueuedForcedSend() async throws {
+        let mockClient = MockLocationClient()
+        let svc = serviceWithFix(mockClient)
+        try await addFriend()
+        let friendId = try XCTUnwrap(svc.repo.friends.first?.id)
+        svc.pendingForcedSendFriendIds = [friendId]
+        await svc.removeFriend(id: friendId)
+        XCTAssertTrue(svc.pendingForcedSendFriendIds.isEmpty)
+    }
+
+    /// A poor fix with friends queued asks for a better one, but only once per interval.
+    func testReportLocation_PoorFixRequestsAFixOnceWithinInterval() async throws {
+        let mockClient = MockLocationClient()
+        let svc = serviceWithFix(mockClient)
+        try await addFriend()
+        svc.pendingForcedSendFriendIds = [try XCTUnwrap(svc.repo.friends.first?.id)]
+        var requests = 0
+        mockLocationProvider.onRequestImmediateLocation = { requests += 1 }
+        let poor = LocationSyncService.minBroadcastAccuracyMeters + 1000
+        svc.reportLocation(lat: 37.0, lng: -122.0, accuracy: poor)
+        svc.reportLocation(lat: 37.0, lng: -122.0, accuracy: poor)
+        XCTAssertEqual(requests, 1)
     }
 
     // MARK: - handleNetworkRestored
@@ -1478,6 +1735,39 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertEqual(friends.count, 1)
     }
 
+    /// Mutual scan: while we confirm a scan of Alice's invite, a poll delivers a scan of our own
+    /// invite (pendingInitAliceEkPub set). Finishing our scan must not delete that pairing.
+    func testConfirmQrScan_DoesNotClearUnrelatedPendingInit() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.skipUpdateVisibleUsers = true
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
+        service.pollTimer?.invalidate()
+
+        let alice = makeTestE2eeManager()
+        let aliceQr = try await alice.createInvite(suggestedName: "Alice")
+        let ownQr = try await service.e2eeManager.createInvite(suggestedName: "Me")
+        let fakePayload = Shared.KeyExchangeInitPayload(
+            v: Shared.ProtocolConstantsKt.PROTOCOL_VERSION,
+            ekPub: kotlinByteArray(from: Data([1, 2, 3])),
+            keyConfirmation: kotlinByteArray(from: Data([4, 5, 6])),
+            encryptedName: kotlinByteArray(from: Data(repeating: 0, count: 31)),
+            suggestedName: "Carol",
+            msgId: "msg-mutual"
+        )
+        service.repo.pendingInitPayload = fakePayload
+        service.repo.pendingInitAliceEkPub = ownQr.ekPub
+
+        await service.confirmQrScan(qr: aliceQr, friendName: "Alice")
+
+        XCTAssertNotNil(service.repo.pendingInitPayload, "the incoming pairing's naming dialog must survive")
+        XCTAssertEqual(service.repo.pendingInitAliceEkPub, ownQr.ekPub)
+        let invites = try await service.e2eeManager.listPendingInvites()
+        XCTAssertTrue(invites.contains { $0.qrPayload.ekPub == ownQr.ekPub }, "our own invite must not be deleted")
+    }
+
     /// Invite errors stay until dismissed; a successful poll doesn't clear them.
     func testInviteError_SurvivesStatusResetUntilDismissed() {
         XCTAssertFalse(service.processQrUrl("not a where invite"))
@@ -1614,6 +1904,27 @@ class LocationSyncServiceTests: XCTestCase {
         svc.togglePauseFriend(id: "friend-1")
 
         await fulfillment(of: [noSend], timeout: 0.5)
+    }
+
+    /// Unpausing with no fix yet asks for one and sends to that friend when it arrives.
+    func testUnpause_WithNoFix_RequestsAFixAndSendsWhenItArrives() async throws {
+        let mockClient = MockLocationClient()
+        let svc = serviceWithFix(mockClient)
+        mockLocationProvider.location = nil
+        svc.togglePauseFriend(id: "friend-1")  // pause
+        mockLocationProvider.requestImmediateLocationCalled = false
+
+        svc.togglePauseFriend(id: "friend-1")  // unpause, no fix cached
+
+        XCTAssertTrue(mockLocationProvider.requestImmediateLocationCalled, "Unpause must ask for a fix")
+        XCTAssertEqual(svc.pendingForcedSendFriendIds, ["friend-1"])
+
+        let sent = XCTestExpectation(description: "Location sent to the unpaused friend")
+        mockClient.sendLocationToFriendCallback = { friendId in
+            if friendId == "friend-1" { sent.fulfill() }
+        }
+        svc.reportLocation(lat: 37.0, lng: -122.0, accuracy: 10)
+        await fulfillment(of: [sent], timeout: 1.0)
     }
 
     /// So LocationClient retries an owed stop, as on Android.

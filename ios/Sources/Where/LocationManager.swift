@@ -19,6 +19,13 @@ protocol LocationProviding: AnyObject {
     func sharingStateChanged()
     /// When-In-Use or Always. Without it no Location may be sent, whatever the sharing toggle says.
     var hasLocationPermission: Bool { get }
+    /// Whether the app is on screen. The compass heading only turns our own map arrow, so it
+    /// runs only while visible (no-op for providers without one).
+    func setAppVisible(_ visible: Bool)
+}
+
+extension LocationProviding {
+    func setAppVisible(_ visible: Bool) {}
 }
 
 @MainActor
@@ -305,7 +312,26 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
 
         manager.startMonitoringSignificantLocationChanges()
         manager.startMonitoringVisits()
-        manager.startUpdatingHeading()
+        if headingWanted { manager.startUpdatingHeading() }
+    }
+
+    /// Heading updates are wanted only while the app is visible: the only consumer is the own-
+    /// location arrow on the map, and the compass keeps running (and waking the app) otherwise.
+    /// False until the first foreground entry, so a cold background relaunch doesn't start it.
+    private var headingWanted = false
+
+    func setAppVisible(_ visible: Bool) {
+        headingWanted = visible
+        guard let manager = manager else { return }
+        if visible {
+            if updatesTask != nil { manager.startUpdatingHeading() }
+        } else {
+            manager.stopUpdatingHeading()
+            // A frozen heading would be re-reported (heartbeats) as if current. The service clears
+            // its own ownHeading (this must not touch LocationSyncService.shared: the service calls
+            // this from its own init).
+            heading = nil
+        }
     }
 
     /// Processes one stationarity reading from the liveUpdates stream.
@@ -491,6 +517,8 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     /// call it directly — CLHeading has no public initializer, so the callback itself
     /// isn't directly testable.
     func handleHeadingUpdate(trueHeading: Double, magneticHeading: Double) {
+        // A callback queued before setAppVisible(false) must not bring a frozen heading back.
+        guard headingWanted else { return }
         self.heading = trueHeading >= 0 ? trueHeading : magneticHeading
         // Heading isn't in the Location payload: it only turns our own map arrow, so it's
         // not a reason to send (that re-sent a possibly stale fix on every 5° turn).
