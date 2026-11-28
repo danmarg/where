@@ -144,9 +144,13 @@ jobs:
       fail-fast: false
       matrix:
         base: ${{ fromJSON(needs.baselines.outputs.refs) }}
+        flavor: [fdroid, gms]
+    # The fdroid job keeps its original name (a required check may match it).
+    name: android-upgrade (${{ matrix.base }}${{ matrix.flavor == 'gms' && ', gms' || '' }})
     runs-on: ubuntu-latest
     timeout-minutes: 110
     env:
+      E2E_FLAVOR: ${{ matrix.flavor }}
       # Set here so the test can relaunch the emulator with the same flags if it exits on a reboot.
       # `-no-snapshot` keeps the initial launch and the relaunch configured the same way.
       EMULATOR_OPTIONS: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
@@ -223,7 +227,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: android-e2e-logs-${{ matrix.base }}
+          name: android-e2e-logs-${{ matrix.base }}-${{ matrix.flavor }}
           path: |
             ${{ runner.temp }}/e2e/server.log
             ${{ runner.temp }}/e2e/logcat.txt
