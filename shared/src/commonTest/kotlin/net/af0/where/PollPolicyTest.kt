@@ -2,11 +2,13 @@ package net.af0.where
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 
 class PollPolicyTest {
     private val now = 10_000_000L
     private val bound = PollPolicy.PENDING_INIT_BOUND_MS
     private val window = PollPolicy.BACKGROUND_INVITE_WINDOW_MS
+    private val awaiting = PollPolicy.AWAITING_FIRST_UPDATE_BOUND_MS
     private val trig = PollPolicy.RAPID_TRIGGER_WINDOW_MS
 
     private data class Case(
@@ -30,6 +32,15 @@ class PollPolicyTest {
     ) = PollPolicy.State(false, at, sheet, naming, init, trigger)
 
     @Test
+    fun `stamps in the future count as expired`() {
+        // The wall clock stepped back 3 h after each stamp was taken.
+        val ahead = now + 3 * 3_600_000L
+        assertFalse(PollPolicy.isRapid(bg(at = null, trigger = ahead), now))
+        assertFalse(PollPolicy.isRapid(bg(at = null, init = ahead), now))
+        assertFalse(PollPolicy.isRapid(bg(at = ahead, sheet = true), now))
+    }
+
+    @Test
     fun `rapid table`() {
         val cases =
             listOf(
@@ -51,6 +62,9 @@ class PollPolicyTest {
                 Case("pending init at bound", bg(null, init = now - bound), now, false),
                 Case("pending init absent", bg(null, init = null), now, false),
                 Case("pending init holds past the sheet window", bg(now - window - 1, init = now - 1), now, true),
+                Case("awaiting first update fresh", fg().copy(awaitingFirstUpdateAtMs = now - 1), now, true),
+                Case("awaiting first update at bound-1", bg(null).copy(awaitingFirstUpdateAtMs = now - awaiting + 1), now, true),
+                Case("awaiting first update at bound", bg(null).copy(awaitingFirstUpdateAtMs = now - awaiting), now, false),
                 Case("lapsed sheet and trigger", bg(now - window, sheet = true, trigger = now - trig), now, false),
             )
         for (c in cases) assertEquals(c.rapid, PollPolicy.isRapid(c.state, c.nowMs), c.name)
@@ -70,6 +84,23 @@ class PollPolicyTest {
         assertEquals(2_000L, PollPolicy.intervalMs(rapid = true, appForeground = false))
         assertEquals(10_000L, PollPolicy.intervalMs(rapid = false, appForeground = true))
         assertEquals(300_000L, PollPolicy.intervalMs(rapid = false, appForeground = false))
+    }
+
+    @Test
+    fun `target interval table`() {
+        data class Row(val rapid: Boolean, val fg: Boolean, val sharing: Boolean, val peers: Boolean, val ms: Long)
+        val rows =
+            listOf(
+                Row(true, true, false, false, 2_000L),
+                Row(true, false, false, false, 2_000L),
+                Row(false, true, false, false, 10_000L),
+                Row(false, true, true, true, 10_000L),
+                Row(false, false, true, true, 300_000L),
+                Row(false, false, false, true, 1_800_000L),
+                Row(false, false, true, false, 1_800_000L),
+                Row(false, false, false, false, 1_800_000L),
+            )
+        for (r in rows) assertEquals(r.ms, PollPolicy.targetIntervalMs(r.rapid, r.fg, r.sharing, r.peers), r.toString())
     }
 
     @Test

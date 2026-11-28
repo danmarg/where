@@ -120,11 +120,15 @@ class LocationSendSchedulerTest {
             }
             advanceTimeBy(60_000L)
             runCurrent()
-            assertEquals(1, h.sender.sent.size, "under 200 m: nothing before the heartbeat")
+            assertEquals(1, h.sender.sent.size, "under 150 m: nothing before the heartbeat")
 
-            h.scheduler.onFix(37.0 + 0.0023, -122.0) // ~255 m from the delivered fix
+            h.scheduler.onFix(37.0 + 0.0012, -122.0) // ~133 m: still under the send threshold
             runCurrent()
-            assertEquals(2, h.sender.sent.size, "past 200 m: sent once the interval allows")
+            assertEquals(1, h.sender.sent.size, "under 150 m from the last sent fix: no early send")
+
+            h.scheduler.onFix(37.0 + 0.0017, -122.0) // ~189 m: the OS filter's 200 m, measured another way
+            runCurrent()
+            assertEquals(2, h.sender.sent.size, "near 200 m: sent once the interval allows")
         }
 
     @Test

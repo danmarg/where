@@ -107,7 +107,7 @@ The app does not use Activity Recognition: it needs the `ACTIVITY_RECOGNITION` p
 ### 4.2 iOS: Persistent Background Activity Session
 iOS does not expose any guaranteed periodic wake mechanism to third-party apps. There is no `setExactAndAllowWhileIdle` equivalent: `Timer` is paused while the process is suspended, and `BGAppRefreshTask` cadence is at the system's discretion (frequently zero overnight for idle users). To deliver a reliable 5-minute heartbeat while stationary, we therefore have to keep the process **unsuspended** the whole time.
 
-* **`CLBackgroundActivitySession`:** When the user is sharing with at least one friend, the app holds an active `CLBackgroundActivitySession` and consumes `CLLocationUpdate.liveUpdates()` continuously. This is what keeps the main run loop alive in the background, which in turn keeps the 1Hz `Timer` ticking inside `LocationSyncService`, which fires `pollAll()` every 5 minutes for the heartbeat (`Self.normalPollInterval`).
+* **`CLBackgroundActivitySession`:** When the user is sharing with at least one friend, the app holds an active `CLBackgroundActivitySession` and consumes `CLLocationUpdate.liveUpdates()` continuously. This is what keeps the main run loop alive in the background, which in turn keeps the 1Hz `Timer` ticking inside `LocationSyncService`, which fires `pollAll()` every 5 minutes for the heartbeat (`PollPolicy.BACKGROUND_INTERVAL_MS`).
 * **Battery cost rationale:** `liveUpdates()` is documented to throttle radio and GPS usage aggressively while the device is stationary — most stationary deliveries piggyback on existing OS location work rather than activating the GNSS chipset. Empirically the steady-state cost is small, and stationary users (sleeping, at a desk, at home) are very often plugged in.
 * **Distance filter:** `CLLocationManager.distanceFilter = 200m` suppresses sub-threshold drift.
 * **Stationary detection & immediate signal:** The first time `CLLocationUpdate.stationary` reports stationary, the app immediately sends one `Location` update flagged `stationary = true` (no debounce) so a peer can render "here since HH:mm" before this device might get suspended — an earlier version delayed this behind a live in-process 5-minute `Task.sleep`, which died silently if the app was suspended before it completed, defeating the whole point. The 5-minute `pollAll()` heartbeat then re-sends the cached coordinate (`bestAvailableLocation`) without forcing a fresh GPS fix, after a `CMMotionActivityManager` sanity check.
@@ -157,7 +157,8 @@ To maintain parity and predictability across platforms, the following parameters
 | `BACKGROUND_POLL_INTERVAL` | **300.0 seconds (5m)** | Normal background polling and heartbeat rate. |
 | `MAINTENANCE_POLL_INTERVAL` | **1800.0 seconds (30m)** | Polling rate when sharing is paused or no friends exist. |
 | `PUSH_THROTTLE_INTERVAL` | **30.0 seconds** | Software limit for sending location updates. |
-| `MOVEMENT_RADIUS_THRESHOLD` | **200.0 meters** | Distance filter to trigger a movement update. |
+| `MOVEMENT_RADIUS_THRESHOLD` | **200.0 meters** | Distance filter the OS applies to delivered fixes. |
+| `SendPolicy.minDistanceMeters` | **150.0 meters** | Distance from the last *sent* fix that sends before the heartbeat (below the OS filter so a delivered 200 m fix always passes). |
 | `STATIONARY_GEOFENCE_RADIUS` | **200.0 meters** | Android geofence size to detect stationary exit. |
 | `GPS_INTERVAL_FOREGROUND` | **10.0 seconds** | GPS request interval on Android in foreground. |
 | `GPS_INTERVAL_BACKGROUND` | **30.0 seconds** | GPS request interval on Android in background. |

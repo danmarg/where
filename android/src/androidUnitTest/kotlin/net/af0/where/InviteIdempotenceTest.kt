@@ -25,6 +25,7 @@ import net.af0.where.e2ee.InvitePublicKey
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.QrPayload
 import net.af0.where.e2ee.SystemRng
+import net.af0.where.e2ee.toHex
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -80,6 +81,29 @@ class InviteIdempotenceTest {
     @After
     fun tearDown() {
         Dispatchers.resetMain()
+    }
+
+    @Test
+    fun inviteAcceptedBeforeTheUpgradeIsStillRejected() {
+        val qr = invite()
+        val key =
+            java.security.MessageDigest.getInstance("SHA-256")
+                .digest(qr.ekPub.toByteArray()).copyOf(16).toHex()
+        val future = System.currentTimeMillis() / 1000 + 3600
+        app.getSharedPreferences(LegacyConsumedInvites.PREFS_NAME, android.content.Context.MODE_PRIVATE)
+            .edit().putLong(key, future).commit()
+
+        assertTrue(LegacyConsumedInvites(app).contains(qr))
+        assertFalse(LegacyConsumedInvites(app).contains(invite()), "another invite is unaffected")
+    }
+
+    @Test
+    fun lapsedLegacyRecordsAreDeleted() {
+        val prefs = app.getSharedPreferences(LegacyConsumedInvites.PREFS_NAME, android.content.Context.MODE_PRIVATE)
+        prefs.edit().putLong("deadbeef", 1L).commit()
+
+        assertFalse(LegacyConsumedInvites(app).contains(invite()))
+        assertTrue(app.getSharedPreferences(LegacyConsumedInvites.PREFS_NAME, android.content.Context.MODE_PRIVATE).all.isEmpty())
     }
 
     @Test

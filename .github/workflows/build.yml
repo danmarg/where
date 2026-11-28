@@ -51,6 +51,25 @@ jobs:
           LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
         run: ./gradlew :android:assembleStandardFdroidDebug
 
+      # The gms flavor: compile and minify it (R8 problems in Play-services code show up here, not
+      # in the fdroid e2e). The key is a placeholder: the build only requires one to be set, and
+      # nothing here runs the app. Signed with a throwaway debug key.
+      - name: Build gms release APK (minified)
+        env:
+          LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
+          MAPS_API_KEY: ci-placeholder
+        run: |
+          mkdir -p "$HOME/.android"
+          # The fdroid debug build above may already have created it.
+          [ -f "$HOME/.android/debug.keystore" ] ||
+            keytool -genkeypair -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey \
+              -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          ./gradlew :android:assembleStandardGmsRelease --quiet \
+            -Pandroid.injected.signing.store.file="$HOME/.android/debug.keystore" \
+            -Pandroid.injected.signing.store.password=android \
+            -Pandroid.injected.signing.key.alias=androiddebugkey \
+            -Pandroid.injected.signing.key.password=android
+
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:

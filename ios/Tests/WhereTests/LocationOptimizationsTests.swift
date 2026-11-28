@@ -203,6 +203,7 @@ class LocationOptimizationsTests: XCTestCase {
         var broadcasts = 0
         locationManager.sendLocationOverride = { _, _, _, _ in broadcasts += 1 }
 
+        locationManager.setAppVisible(true)
         locationManager.handleHeadingUpdate(trueHeading: 90, magneticHeading: 90)
 
         XCTAssertEqual(broadcasts, 0, "a heading change must not re-send the cached location while not tracking")
@@ -219,6 +220,7 @@ class LocationOptimizationsTests: XCTestCase {
         locationManager.sendLocationOverride = { _, _, _, _ in broadcasts += 1 }
 
         locationManager.handleVisitUpdate(lat: 37.7749, lng: -122.4194)
+        locationManager.setAppVisible(true)
         locationManager.handleHeadingUpdate(trueHeading: 90, magneticHeading: 90)
 
         // Heading isn't in the Location payload: it only turns our own map arrow.
@@ -237,6 +239,7 @@ class LocationOptimizationsTests: XCTestCase {
         var broadcasts = 0
         locationManager.sendLocationOverride = { _, _, _, _ in broadcasts += 1 }
 
+        locationManager.setAppVisible(true)
         locationManager.handleHeadingUpdate(trueHeading: 42.0, magneticHeading: 42.0)
 
         XCTAssertEqual(broadcasts, 0)

@@ -14,13 +14,14 @@ CREATE TABLE Friends (
     lastDecryptFailed INTEGER NOT NULL DEFAULT 0,
     version INTEGER NOT NULL DEFAULT 0,
     stationarySinceTs INTEGER,
-    stoppedAtTs INTEGER
+    stoppedAtTs INTEGER,
+    lastLocationRecvTs INTEGER
 );
 
 -- Friends Queries
 insertFriend:
-INSERT OR REPLACE INTO Friends(id, name, sessionBlob, isInitiator, lastLat, lastLng, lastTs, lastRecvTs, isConfirmed, lastSentTs, lastPollTs, version, stationarySinceTs, stoppedAtTs)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT OR REPLACE INTO Friends(id, name, sessionBlob, isInitiator, lastLat, lastLng, lastTs, lastRecvTs, isConfirmed, lastSentTs, lastPollTs, version, stationarySinceTs, stoppedAtTs, lastLocationRecvTs)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 deleteFriend:
 DELETE FROM Friends WHERE id = ?;

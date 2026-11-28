@@ -224,7 +224,7 @@ class LocationViewModel(
                 val ts = friend.lastTs
                 if (lat != null && lng != null && ts != null) {
                     initialLocations[friend.id] = UserLocation(friend.id, lat, lng, ts)
-                    initialLastPing[friend.id] = ts * 1000L
+                    initialLastPing[friend.id] = (friend.lastSeenSeconds ?: ts) * 1000L
                 }
             }
             locationSource.setInitialFriendLocations(initialLocations, initialLastPing)
@@ -467,8 +467,8 @@ class LocationViewModel(
         // friend list is the cheap early check; E2eeManager.processScannedQr enforces it again
         // under its lock, together with the stored record of consumed invites (which also covers
         // a friend since removed) and reports it as InviteAlreadyAcceptedException. Consumed
-        // records are not imported from the old SharedPreferences store: invites accepted before
-        // this upgrade are forgotten (at most 48 h of exposure, and the inviter has dropped them).
+        // records can't be imported from the old SharedPreferences store (hashed keys), so that
+        // is consulted read-only until its entries lapse (the app's warm-up thread has loaded it).
         if (friends.value.any { it.isFromInvite(qr) }) {
             Log.w(TAG, "processQrUrl: invite already accepted")
             showInviteError(MR.strings.invite_already_used)
@@ -490,7 +490,7 @@ class LocationViewModel(
         viewModelScope.launch {
             val consumed =
                 try {
-                    e2eeManager.isInviteConsumed(qr)
+                    e2eeManager.isInviteConsumed(qr) || LegacyConsumedInvites(getApplication()).contains(qr)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -534,6 +534,10 @@ class LocationViewModel(
         beginExchange()
         viewModelScope.launch {
             try {
+                // The shared manager knows nothing of invites accepted before the upgrade.
+                if (LegacyConsumedInvites(getApplication()).contains(qr)) {
+                    throw InviteAlreadyAcceptedException()
+                }
                 val (initPayload, bobEntry) = e2eeManager.processScannedQr(qrWithName, displayName.value)
                 // Never log routing tokens: they are mailbox read/delete capabilities.
                 Log.d(TAG, "confirmQrScan: processScannedQr succeeded, fingerprint=${bobEntry.id.take(8)}")
@@ -747,6 +751,9 @@ class LocationViewModel(
                 } finally {
                     stoppedSharingInFlight = false
                 }
+                // Permission may have returned while the send was in flight, when the check above
+                // saw the flag unset and did nothing: re-check now that it is set (C8).
+                if (getApplication<Application>().hasLocationPermission()) reconcileSharingWithPermission()
             }
         } else if (hasPermission && notified) {
             prefs.edit().putBoolean(KEY_STOPPED_FOR_MISSING_PERMISSION, false).apply()

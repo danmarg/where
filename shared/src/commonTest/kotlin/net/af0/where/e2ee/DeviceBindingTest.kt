@@ -7,6 +7,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -184,14 +185,32 @@ class DeviceBindingTest {
         driver.execute(null, "DROP TABLE DeviceBinding", 0)
         driver.execute(null, "DROP TABLE ConsumedInvites", 0)
         driver.execute(null, "DROP TABLE OwedStops", 0)
+        driver.execute(null, "ALTER TABLE Friends DROP COLUMN lastLocationRecvTs", 0)
 
         WhereDatabase.Schema.migrate(driver, 4, WhereDatabase.Schema.version)
 
         val queries = WhereDatabase(driver).deviceBindingQueries
         queries.setMarker("m")
         assertNotNull(queries.getMarker().executeAsOneOrNull())
-        assertEquals(7, WhereDatabase.Schema.version)
+        assertEquals(8, WhereDatabase.Schema.version)
         assertEquals(0L, WhereDatabase(driver).consumedInvitesQueries.isConsumed(byteArrayOf(1), 0L).executeAsOne())
         assertTrue(WhereDatabase(driver).owedStopsQueries.getAll().executeAsList().isEmpty())
+    }
+
+    @Test
+    fun migrationFromVersion7AddsLastLocationRecvTsAsNullForExistingFriends() {
+        val driver = createTestSqlDriver()
+        driver.execute(null, "ALTER TABLE Friends DROP COLUMN lastLocationRecvTs", 0)
+        driver.execute(
+            null,
+            "INSERT INTO Friends(id, name, sessionBlob, lastTs, lastRecvTs) VALUES ('f', 'Old', x'00', 42, 50)",
+            0,
+        )
+
+        WhereDatabase.Schema.migrate(driver, 7, WhereDatabase.Schema.version)
+
+        val row = WhereDatabase(driver).friendsQueries.getFriend("f").executeAsOne()
+        assertNull(row.lastLocationRecvTs)
+        assertEquals(42L, row.lastTs)
     }
 }

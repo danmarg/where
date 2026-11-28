@@ -890,6 +890,34 @@ class LocationViewModelTest {
             coVerify(exactly = 1) { mockClient.sendStoppedSharingToFriend(friendId) }
         }
 
+    /** C14: after a cold start "last seen" is the persisted receive time, not the sender's GPS ts. */
+    @Test
+    fun coldStartLastSeenUsesPersistedReceiveTime() =
+        runTest {
+            val store = mockk<E2eeManager>(relaxed = true)
+            val friend = mockk<FriendEntry>(relaxed = true)
+            every { friend.id } returns "friend-bob"
+            every { friend.lastLat } returns 1.0
+            every { friend.lastLng } returns 2.0
+            every { friend.lastTs } returns 100L
+            every { friend.lastLocationRecvTs } returns 5_000L
+            every { friend.lastSeenSeconds } returns 5_000L
+            coEvery { store.listFriends() } returns listOf(friend)
+            val source = TestFakeLocationSource()
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeManagerParam = store,
+                    locationClientParam = mockk<LocationClient>(relaxed = true),
+                    locationSourceParam = source,
+                    uiStateStoreParam = FakeUiStateStore(),
+                )
+            advanceUntilIdle()
+
+            assertEquals(5_000_000L, source.friendLastPing.value["friend-bob"])
+            assertEquals(100L, source.friendLocations.value["friend-bob"]?.timestamp)
+        }
+
     /**
      * Regression for #405: an invite shown in person is never "exported", and the scan can land
      * after the sheet is closed (e.g. to scan the other person's QR). Dismissing must keep the
@@ -1478,6 +1506,37 @@ class LocationViewModelTest {
             source.setAppForeground(true)
             advanceUntilIdle()
 
+            coVerify(exactly = 2) { client.sendStoppedSharing(any()) }
+        }
+
+    @Test
+    fun permissionRegainedDuringStopSend_stillClearsFlagAndResumes() =
+        runTest {
+            val source = TestFakeLocationSource()
+            val client = mockPollingClient()
+            val (vm, userStore) = sharingVm(source, client)
+            viewModel = vm
+            userStore.setSharing(true)
+            // Permission returns while the "stopped sharing" send is in flight: that check sees the
+            // flag still unset and does nothing.
+            coEvery { client.sendStoppedSharing(any()) } coAnswers {
+                shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
+                vm.onLocationPermissionChanged()
+            }
+            source.setAppForeground(true)
+            advanceUntilIdle()
+            var forced = false
+            while (true) {
+                val i = shadowOf(app).nextStartedService ?: break
+                if (i.action == LocationService.ACTION_FORCE_PUBLISH) forced = true
+            }
+            assertTrue(forced, "the flag set after the send must not outlive the regained permission")
+
+            // A later loss is a new event: it must notify again, not be swallowed by a stale flag.
+            shadowOf(app).denyPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
+            coEvery { client.sendStoppedSharing(any()) } returns Unit
+            vm.onLocationPermissionChanged()
+            advanceUntilIdle()
             coVerify(exactly = 2) { client.sendStoppedSharing(any()) }
         }
 
