@@ -13,7 +13,8 @@
 # providers, which emulator test providers drive directly. The gms flavor's fused location runs
 # inside Play services, which on a fresh emulator restarts itself mid-test and drops or never
 # delivers test fixes. With E2E_FLAVOR=gms the gms flavor runs the same script minus everything
-# that needs the app to see a fix (its own sends, location listeners, Doze and reboot): pairing,
+# that needs the app to see a fix (its own sends, Doze and reboot) or that reads the app's location
+# registrations from dumpsys (fused location registers through Play services, not the app): pairing,
 # receiving, upgrade, outage, process death, replay, pause UI, backup, removal and permission
 # changes still run, which covers the gms build's manifest, R8 and Play-services startup.
 # Upgrade-relevant code (shared, database, E2EE, invites, pause, backup rules) is the same in both
@@ -31,7 +32,6 @@ case "$FLAVOR" in
   gms)
     FLAVOR_CAP=Gms
     export MAPS_API_KEY=${MAPS_API_KEY:-ci-placeholder} # the gms build requires one; nothing here uses maps
-    E2E_QUICK=1 # Doze and reboot rely on the app's own sends
     ;;
   *) echo "E2E_FLAVOR must be fdroid or gms" >&2; exit 2 ;;
 esac
@@ -297,7 +297,7 @@ retry 60 friend_count_is 1 || fail "the app did not record the friend"
 fixes move_and_publish 52.53 || fail "CLI never received a location from the baseline app"
 cli alice send 48.137 11.575 --force | grep -q successfully || fail "CLI send failed"
 retry 60 app_has_lat 48.137 || fail "baseline app never received the CLI's location"
-echo "✓ Baseline app paired and exchanged locations both ways"
+echo "✓ Baseline app paired and received the CLI's location$([ "$FLAVOR" = fdroid ] && echo ", and sent its own")"
 
 log "Upgrade to HEAD in place"
 cli alice poll --once >/dev/null # drain, so a location seen below came from the upgraded app
@@ -342,11 +342,11 @@ adb shell su 0 kill -9 "$PID"
 cli alice poll --once >/dev/null
 retry 180 app_restarted_since "$PID" || fail "the app was not restarted after its process was killed"
 fixes feed_until_cli_gets 240 52.72 || fail "no location after the app process was killed"
-echo "✓ Process death: restarted and sending"
+echo "✓ Process death: restarted$([ "$FLAVOR" = fdroid ] && echo " and sending")"
 
 # Doze and reboot take ~5 min each; E2E_QUICK skips them for quicker runs on PRs and on demand.
-if [ -n "$E2E_QUICK" ]; then
-  log "Skipping Doze and reboot (E2E_QUICK)"
+if [ -n "$E2E_QUICK" ] || [ "$FLAVOR" = gms ]; then
+  log "Skipping Doze and reboot (E2E_QUICK, or gms: they rely on the app's own sends)"
 else
   # Not exempt from battery optimization, as for a user who declines the app's prompt.
   log "Deep Doze, not battery-exempt: heartbeats still get through"
